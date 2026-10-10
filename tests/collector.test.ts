@@ -30,6 +30,7 @@ test("real Collector forwards all signals, parses CRI, and replays durable queue
   const children: ReturnType<typeof Bun.spawn>[] = [];
   const fds: number[] = [];
   let proxy: ReturnType<typeof Bun.serve> | undefined;
+  let kubelet: ReturnType<typeof Bun.serve> | undefined;
   try {
     const [sinkPort, httpPort, grpcPort, healthPort, metricsPort] = await Promise.all(
       Array.from({ length: 5 }, () => port()));
@@ -62,7 +63,31 @@ test("real Collector forwards all signals, parses CRI, and replays durable queue
         method: "POST", headers: request.headers, body: await request.arrayBuffer(),
       });
     } });
-    const { config } = render(["--set", "metrics.collectKubeletMetrics=false"]);
+    const cert = join(dir, "cert.pem");
+    const key = join(dir, "key.pem");
+    expect(Bun.spawnSync(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+      "-subj", "/CN=localhost", "-keyout", key, "-out", cert]).exitCode).toBe(0);
+    let kubeletRequests = 0;
+    kubelet = Bun.serve({ hostname: "127.0.0.1", port: 0,
+      tls: { cert: Bun.file(cert), key: Bun.file(key) },
+      fetch(request) {
+        if (new URL(request.url).pathname !== "/stats/summary") return new Response(null, { status: 404 });
+        kubeletRequests++;
+        const time = new Date().toISOString();
+        return Response.json({ node: { nodeName: "collector-node", startTime: time,
+          cpu: { time, usageCoreNanoSeconds: 1000000, usageNanoCores: 1000 },
+          memory: { time, usageBytes: 2048, workingSetBytes: 1024, availableBytes: 1048576 },
+        }, pods: [] });
+      },
+    });
+    const { config } = render(["--set", "metrics.collectionInterval=1s"]);
+    // Keep the chart's URL shape and NODE_IP expansion; only substitute fixture port/auth.
+    config.receivers.kubelet_stats.endpoint = config.receivers.kubelet_stats.endpoint.replace(":10250", `:${kubelet.port}`);
+    config.receivers.kubelet_stats.auth_type = "tls";
+    config.receivers.kubelet_stats.cert_file = cert;
+    config.receivers.kubelet_stats.key_file = key;
+    config.receivers.kubelet_stats.insecure_skip_verify = true;
+    config.receivers.kubelet_stats.ca_file = cert;
     config.extensions.file_storage.directory = join(dir, "storage");
     config.extensions.file_storage.compaction.directory = join(dir, "compaction");
     config.extensions.health_check.endpoint = `127.0.0.1:${healthPort}`;
@@ -116,7 +141,8 @@ test("real Collector forwards all signals, parses CRI, and replays durable queue
     }
     await eventually(async () => {
       const text = JSON.stringify(await records());
-      for (const marker of ["otlp-marker", "cri-marker", "smoke.gauge", "smoke-span"]) expect(text).toContain(marker);
+      for (const marker of ["otlp-marker", "cri-marker", "smoke.gauge", "smoke-span", "k8s.node.cpu"]) expect(text).toContain(marker);
+      expect(kubeletRequests).toBeGreaterThan(0);
     });
     for (const signal of ["logs", "metrics", "traces"]) {
       expect(requests.some((r) => r.path === `/v1/${signal}` &&
@@ -130,10 +156,13 @@ test("real Collector forwards all signals, parses CRI, and replays durable queue
       if (attrs["service.name"] === "checkout") {
         expect(attrs["k8s.node.name"]).toBe("application-node");
         expect(attrs["ezgh.metadata.application"]).toBe("checkout");
-      } else {
+      } else if (attrs["k8s.container.name"] === "app") {
         expect(attrs["k8s.node.name"]).toBe("collector-node");
         expect(attrs["k8s.namespace.name"]).toBe("default");
         expect(attrs["k8s.container.name"]).toBe("app");
+      } else {
+        expect(attrs["k8s.node.name"]).toBe("collector-node");
+        expect(attrs["ezgh.metadata.application"]).toBe("kubernetes");
       }
     }
     unavailable = true;
@@ -155,6 +184,7 @@ test("real Collector forwards all signals, parses CRI, and replays durable queue
     for (const child of children) { if (child.exitCode === null) child.kill("SIGKILL"); }
     await Promise.all(children.map((c) => c.exited));
     proxy?.stop(true);
+    kubelet?.stop(true);
     fds.forEach(closeSync);
     rmSync(dir, { recursive: true, force: true });
   }

@@ -38,8 +38,8 @@ metrics:
   collectKubeletMetrics: true
   collectionInterval: 30s
   kubelet:
-    # Literal Collector env substitution, not Helm templating. Brackets support IPv6 too.
-    endpoint: "https://[${env:NODE_IP}]:10250"
+    # Literal Collector env substitution, not Helm templating. IPv4 default.
+    endpoint: "https://${env:NODE_IP}:10250"
     insecureSkipVerify: false
     # Optional ConfigMap in the release namespace with a custom PEM CA.
     caConfigMap: ""

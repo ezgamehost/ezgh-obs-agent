@@ -10,7 +10,7 @@ an existing SDK or other instrumentation.
 
 ## Install
 
-Requires Helm 3.17+ or Helm 4, Kubernetes 1.28+, Linux nodes with standard
+Requires Helm 3.17+ or Helm 4, Kubernetes 1.28+, IPv4-capable Linux nodes with standard
 `/var/log/pods` CRI logs, and permission to create a DaemonSet and cluster RBAC.
 Windows, serverless nodes without hostPath access, and restricted Pod Security
 namespaces are not supported by the default installation.
@@ -104,7 +104,7 @@ All settings are in [values.yaml](charts/ezgh-obs-agent/values.yaml), with a str
 | `logs.startAt` | `beginning` by default, capturing existing files on first install and short-lived pods. Use `end` to avoid an initial backlog. Saved offsets take precedence. |
 | `logs.maxLogSize` | Default `256KiB`, including recombined CRI records. Keep records small enough for the backend request limit. |
 | `metrics.collectionInterval` | Default `30s`. |
-| `metrics.kubelet.endpoint` | Default node IP on HTTPS 10250; supports Collector `${env:…}` substitutions. |
+| `metrics.kubelet.endpoint` | Default node IPv4 address on HTTPS 10250; supports Collector `${env:…}` substitutions. |
 | `metrics.kubelet.caConfigMap`, `metrics.kubelet.caKey` | Custom kubelet CA; otherwise use the ServiceAccount CA. |
 | `metrics.kubelet.insecureSkipVerify` | Default `false`. An explicit opt-out for clusters with untrusted kubelet serving certificates; retains encryption but skips server identity verification. |
 | `export.queueSizeMiB` | Default 64 MiB of queued payload **per signal per node**. |
@@ -199,8 +199,8 @@ kubelet authentication because there is no projected Kubernetes token outside
 a pod; CI's real multi-node test covers the rendered ServiceAccount configuration.
 Set `TEST_CA_FILE` if your system CA bundle is not `/etc/ssl/cert.pem`.
 
-The integration test runs real Collector processes and a local sink: all three
-signals, gzip/auth headers, CRI parsing, source metadata, and forced-restart queue
+The integration test runs real Collector processes, a fixture kubelet HTTPS server,
+and a local sink: all three signals, kubelet polling, gzip/auth headers, CRI parsing, source metadata, and forced-restart queue
 recovery. It sends no telemetry to EZGH. CI additionally installs the chart in a
 disposable two-worker kind cluster and verifies node metrics, pod logs, traces,
 TLS export, and a rolling restart. `scripts/smoke.sh` refuses any context other
