@@ -1,0 +1,13 @@
+{
+  "name": "ezgh-obs-agent",
+  "private": true,
+  "scripts": {
+    "test": "bun test tests/chart.test.ts",
+    "lint": "helm lint charts/ezgh-obs-agent --strict -f tests/values.yaml",
+    "validate": "bun scripts/validate-collector.ts",
+    "test:integration": "bun test tests/collector.test.ts",
+    "package": "mkdir -p dist && helm package charts/ezgh-obs-agent --destination dist"
+  },
+  "engines": { "bun": ">=1.3.0" },
+  "packageManager": "bun@1.4.2"
+}

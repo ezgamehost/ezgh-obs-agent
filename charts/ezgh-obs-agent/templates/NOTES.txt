@@ -1,0 +1,17 @@
+EZGH Obs Agent is installed as DaemonSet {{ .Release.Name }} in {{ .Release.Namespace }}.
+
+Application OTLP endpoints (enabled signals only):
+  HTTP/protobuf: http://{{ .Release.Name }}.{{ .Release.Namespace }}.svc:4318
+  gRPC: {{ .Release.Name }}.{{ .Release.Namespace }}.svc:4317
+
+Check node coverage and export errors:
+  kubectl -n {{ .Release.Namespace }} get daemonset {{ .Release.Name }}
+  kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/instance={{ .Release.Name }} --tail=50
+
+Readiness confirms process health, not successful ingestion. Confirm new records in the
+{{ .Values.ezgh.environment }} dataset. Traces require instrumented applications.
+
+After rotating Secret {{ .Values.auth.existingSecret }}:
+  kubectl -n {{ .Release.Namespace }} rollout restart daemonset/{{ .Release.Name }}
+
+Uninstall retains the existing Secret and node-local queue/checkpoint directories.

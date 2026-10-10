@@ -1,0 +1,6 @@
+cluster:
+  name: test-cluster
+ezgh:
+  environment: test
+auth:
+  existingSecret: test-ingest

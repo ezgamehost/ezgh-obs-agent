@@ -1,0 +1,80 @@
+# Required. Keep the name stable and unique within the destination project.
+cluster:
+  name: ""
+  # Optional stable identifier; name alone is sufficient for installation.
+  uid: ""
+
+ezgh:
+  # Required dataset/environment name: lowercase letters, digits, dots, underscores, hyphens.
+  environment: ""
+  endpoint: https://obs-ingest.ezghcloud.com
+
+# Create this Secret separately in the release namespace. Never put a token in values.
+auth:
+  existingSecret: ""
+  secretKey: ingest-key
+
+image:
+  repository: otel/opentelemetry-collector-contrib
+  tag: "0.162.0"
+  # Optional sha256: digest takes precedence over tag.
+  digest: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+logs:
+  enabled: true
+  collectContainerLogs: true
+  # beginning captures new/short-lived pods; saved offsets take precedence on restart.
+  startAt: beginning
+  excludeNamespaces: []
+  # Additional /var/log/pods glob patterns. This agent's pod is always excluded.
+  exclude: []
+  # Applied both to physical lines and recombined CRI fragments.
+  maxLogSize: 256KiB
+
+metrics:
+  enabled: true
+  collectKubeletMetrics: true
+  collectionInterval: 30s
+  kubelet:
+    # Literal Collector env substitution, not Helm templating. Brackets support IPv6 too.
+    endpoint: "https://[${env:NODE_IP}]:10250"
+    insecureSkipVerify: false
+    # Optional ConfigMap in the release namespace with a custom PEM CA.
+    caConfigMap: ""
+    caKey: ca.crt
+
+traces:
+  enabled: true
+
+export:
+  # Per signal, per node. Queue size bounds serialized payload, not total filesystem use.
+  queueSizeMiB: 64
+  # Per storage database. Allow overhead beyond queue payload size.
+  storageMaxMiB: 128
+  numConsumers: 2
+  timeout: 30s
+
+storage:
+  # Release namespace/name are appended to avoid sharing state between releases.
+  hostPath: /var/lib/ezgh-obs-agent
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 512Mi
+memoryLimiter:
+  # Keep below the container memory limit, with headroom for receiver/export buffers.
+  limitMiB: 400
+  spikeLimitMiB: 100
+
+# Linux is always selected. These additional selectors can limit node coverage.
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
+podAnnotations: {}
+terminationGracePeriodSeconds: 60

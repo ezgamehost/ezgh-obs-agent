@@ -1,0 +1,31 @@
+name: Release chart
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  verify:
+    uses: ./.github/workflows/ci.yaml
+  package:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with: {bun-version: 1.4.2}
+      - uses: azure/setup-helm@v4
+        with: {version: v3.17.3}
+      - name: Verify tag and package
+        run: |
+          version=$(bun -e 'console.log(Bun.YAML.parse(await Bun.file("charts/ezgh-obs-agent/Chart.yaml").text()).version)')
+          test "$GITHUB_REF_NAME" = "v$version"
+          bun run package
+          cd dist
+          sha256sum *.tgz > SHA256SUMS
+      - name: Publish public Helm package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.tgz dist/SHA256SUMS --verify-tag --title "$GITHUB_REF_NAME" --generate-notes

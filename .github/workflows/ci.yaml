@@ -1,0 +1,51 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  chart:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        helm: [v3.17.3, v4.3.0]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with: {bun-version: 1.4.2}
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ matrix.helm }}
+      - run: bun run lint
+      - run: bun run test
+      - run: scripts/download-collector.sh
+      - run: bun run validate
+        env:
+          TEST_CA_FILE: /etc/ssl/certs/ca-certificates.crt
+      - run: bun run test:integration
+      - run: bun run package
+  kubernetes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with: {bun-version: 1.4.2}
+      - uses: azure/setup-helm@v4
+        with: {version: v3.17.3}
+      - name: Install kind
+        run: |
+          curl -fsSLo kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          curl -fsSLo kind.sha256sum https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64.sha256sum
+          # Upstream checksum file names the release asset, not our local filename.
+          expected=$(awk '{print $1}' kind.sha256sum)
+          echo "$expected  kind" | sha256sum --check
+          chmod +x kind
+          sudo mv kind /usr/local/bin/kind
+      - run: kind create cluster --name ezgh-obs-agent --config tests/kind.yaml --wait 120s
+      - run: scripts/smoke.sh
+      - if: always()
+        run: kind delete cluster --name ezgh-obs-agent

@@ -1,0 +1,11 @@
+# No host log access, Kubernetes token, or cluster RBAC. The export queue still uses hostPath.
+cluster:
+  name: production-us-west
+ezgh:
+  environment: production
+auth:
+  existingSecret: ezgh-obs-ingest
+logs:
+  collectContainerLogs: false
+metrics:
+  collectKubeletMetrics: false

@@ -1,0 +1,8 @@
+cluster:
+  name: production-us-west
+ezgh:
+  environment: production
+auth:
+  existingSecret: ezgh-obs-ingest
+logs:
+  excludeNamespaces: [sensitive-workloads]

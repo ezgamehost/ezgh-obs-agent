@@ -1,0 +1,11 @@
+{{- include "agent.validate" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agent.name" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent.labels" . | nindent 4 }}
+data:
+  collector.yaml: |
+    {{- include "agent.config" . | nindent 4 }}

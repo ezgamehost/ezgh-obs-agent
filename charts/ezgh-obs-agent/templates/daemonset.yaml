@@ -1,0 +1,126 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "agent.name" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "agent.selectorLabels" . | nindent 6 }}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 1, maxSurge: 0}
+  template:
+    metadata:
+      labels:
+        {{- include "agent.labels" . | nindent 8 }}
+      annotations:
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        checksum/config: {{ include "agent.config" . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "agent.name" . }}
+      automountServiceAccountToken: {{ and .Values.metrics.enabled .Values.metrics.collectKubeletMetrics }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        seccompProfile: {type: RuntimeDefault}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
+      nodeSelector:
+        {{- toYaml (merge (dict "kubernetes.io/os" "linux") .Values.nodeSelector) | nindent 8 }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: collector
+          {{- if .Values.image.digest }}
+          image: {{ printf "%s@%s" .Values.image.repository .Values.image.digest | quote }}
+          {{- else }}
+          image: {{ printf "%s:%s" .Values.image.repository .Values.image.tag | quote }}
+          {{- end }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--config=/etc/otelcol/collector.yaml"]
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          env:
+            - name: EZGH_INGEST_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.existingSecret | quote }}
+                  key: {{ .Values.auth.secretKey | quote }}
+            - {name: EZGH_ENVIRONMENT, value: {{ .Values.ezgh.environment | quote }}}
+            - {name: CLUSTER_NAME, value: {{ .Values.cluster.name | quote }}}
+            - {name: CLUSTER_UID, value: {{ .Values.cluster.uid | quote }}}
+            - name: NODE_NAME
+              valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+            - name: NODE_IP
+              valueFrom: {fieldRef: {fieldPath: status.hostIP}}
+            - name: POD_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - name: POD_NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+          ports:
+            - {name: otlp-grpc, containerPort: 4317, protocol: TCP}
+            - {name: otlp-http, containerPort: 4318, protocol: TCP}
+            - {name: health, containerPort: 13133, protocol: TCP}
+            - {name: metrics, containerPort: 8888, protocol: TCP}
+          startupProbe:
+            httpGet: {path: /, port: health}
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: {path: /, port: health}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /, port: health}
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - {name: config, mountPath: /etc/otelcol, readOnly: true}
+            - {name: storage, mountPath: /var/lib/ezgh-obs-agent}
+            {{- if and .Values.logs.enabled .Values.logs.collectContainerLogs }}
+            - {name: pod-logs, mountPath: /var/log/pods, readOnly: true}
+            {{- end }}
+            {{- if and .Values.metrics.enabled .Values.metrics.collectKubeletMetrics .Values.metrics.kubelet.caConfigMap }}
+            - {name: kubelet-ca, mountPath: /etc/kubelet-ca, readOnly: true}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "agent.name" . }}
+        - name: storage
+          hostPath:
+            path: {{ printf "%s/%s/%s" (trimSuffix "/" .Values.storage.hostPath) .Release.Namespace .Release.Name | quote }}
+            type: DirectoryOrCreate
+        {{- if and .Values.logs.enabled .Values.logs.collectContainerLogs }}
+        - name: pod-logs
+          hostPath: {path: /var/log/pods, type: Directory}
+        {{- end }}
+        {{- if and .Values.metrics.enabled .Values.metrics.collectKubeletMetrics .Values.metrics.kubelet.caConfigMap }}
+        - name: kubelet-ca
+          configMap:
+            name: {{ .Values.metrics.kubelet.caConfigMap | quote }}
+            items:
+              - key: {{ .Values.metrics.kubelet.caKey | quote }}
+                path: ca.crt
+        {{- end }}
