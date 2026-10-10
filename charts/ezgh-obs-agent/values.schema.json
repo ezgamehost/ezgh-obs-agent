@@ -141,6 +141,7 @@
       "required": [
         "enabled",
         "collectContainerLogs",
+        "parseSeverity",
         "startAt",
         "excludeNamespaces",
         "exclude",
@@ -151,6 +152,9 @@
           "type": "boolean"
         },
         "collectContainerLogs": {
+          "type": "boolean"
+        },
+        "parseSeverity": {
           "type": "boolean"
         },
         "startAt": {

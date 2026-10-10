@@ -15,7 +15,10 @@ node's pods (k8sattributes, node-filtered; read-only pods, ReplicaSets and Jobs)
 to add pod and owner-workload metadata, and names telemetry without a real
 `service.name` after its Deployment (or StatefulSet, DaemonSet, CronJob, Job).
 Application OTLP is enriched only when the Service's internalTrafficPolicy is
-Local, so a pod is never matched by an agent that doesn't watch it.
+Local, so a pod is never matched by an agent that doesn't watch it. Container
+logs without a level get one parsed from common formats (JSON, logfmt, klog, a
+leading level word), stored as canonical text and number; unmatched lines stay
+unset.
 
 Use pinned upstream components, read-only log mounts, root without capabilities
 for host-file access, read-only root filesystem, and a dedicated writable hostPath

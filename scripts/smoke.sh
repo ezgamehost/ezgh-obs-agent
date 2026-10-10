@@ -139,7 +139,8 @@ kubectl run smoke-trace --namespace obs-test --image=curlimages/curl:8.12.1 --re
   --data '{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"smoke-client"}}]},"scopeSpans":[{"spans":[{"traceId":"0123456789abcdef0123456789abcdef","spanId":"0123456789abcdef","name":"ezgh-smoke-span","startTimeUnixNano":"1791590400000000000","endTimeUnixNano":"1791590400001000000"}]}]}]}' \
   http://ezgh-obs-agent.ezgh-obs.svc:4318/v1/traces
 # A span with only the SDK's default name, from a Job: its node's agent names it after the Job.
-kubectl -n obs-test create job smoke-job --image=curlimages/curl:8.12.1 -- \
+# It waits first: an IP is matched to a pod once the kubelet has reported it, a moment after start.
+kubectl -n obs-test create job smoke-job --image=curlimages/curl:8.12.1 -- sh -c 'sleep 5; exec "$@"' -- \
   curl --fail --retry 5 --retry-connrefused \
   -H 'Content-Type: application/json' \
   --data '{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"unknown_service:curl"}}]},"scopeSpans":[{"spans":[{"traceId":"0123456789abcdef0123456789abcdee","spanId":"0123456789abcdee","name":"ezgh-smoke-job-span","startTimeUnixNano":"1791590400000000000","endTimeUnixNano":"1791590400001000000"}]}]}]}' \

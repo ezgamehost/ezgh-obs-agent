@@ -44,7 +44,7 @@ describe("Helm installation contract", () => {
     const { config } = render();
     for (const key of ["log_statements", "metric_statements", "trace_statements"]) {
       const statements = config.processors["transform/application"][key].flatMap((s) => s.statements);
-      const owners = ["deployment", "statefulset", "daemonset", "cronjob", "job"];
+      const owners = ["deployment", "statefulset", "daemonset", "cronjob", "job", "container"];
       owners.forEach((owner, i) => {
         expect(statements[i]).toStartWith(`set(attributes["service.name"], attributes["k8s.${owner}.name"]) where`);
         expect(statements[i]).toContain(`IsMatch(attributes["service.name"], "^unknown_service")`);
@@ -52,6 +52,16 @@ describe("Helm installation contract", () => {
       // The application falls back to the service name only after it's derived.
       expect(statements.findIndex((s) => s.includes("ezgh.metadata.application"))).toBeGreaterThan(owners.length - 1);
     }
+  });
+
+  test("container logs get a level when the runtime gave none; OTLP logs keep theirs", () => {
+    const { config } = render();
+    expect(config.service.pipelines["logs/node"].processors).toContain("transform/severity");
+    expect(config.service.pipelines.logs.processors).not.toContain("transform/severity");
+    expect(config.processors["transform/severity"].log_statements[0].conditions).toEqual(["severity_number == SEVERITY_NUMBER_UNSPECIFIED"]);
+    const off = render(["--set", "logs.parseSeverity=false"]).config;
+    expect(off.processors["transform/severity"]).toBeUndefined();
+    expect(off.service.pipelines["logs/node"].processors).not.toContain("transform/severity");
   });
 
   test("pod metadata needs read-only access to pods, ReplicaSets and Jobs", () => {

@@ -25,6 +25,9 @@ imagePullSecrets: []
 logs:
   enabled: true
   collectContainerLogs: true
+  # A container log's level when the runtime has none: from JSON (level, severity, pino numbers),
+  # logfmt level=, klog's I/W/E/F prefix, or a leading INFO/[WARN]/error: word. Otherwise unset.
+  parseSeverity: true
   # beginning captures new/short-lived pods; saved offsets take precedence on restart.
   startAt: beginning
   excludeNamespaces: []

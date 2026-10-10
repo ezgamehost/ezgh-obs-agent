@@ -149,13 +149,28 @@ test("real Collector forwards all signals, parses CRI, and replays durable queue
       traceId: "0123456789abcdef0123456789abcdef", spanId: "0123456789abcdef", name: "smoke-span",
       startTimeUnixNano: now, endTimeUnixNano: String(BigInt(now) + 1000000n),
     }] }] }] });
-    await Bun.write(join(logDir, "0.log"), `${new Date().toISOString()} stdout F cri-marker\n`);
+    // Levels the runtime doesn't give: each line's expected severity text (null: left unset).
+    const levels: Array<[string, string | null]> = [
+      [`{"level":"warn","msg":"json-level-marker"}`, "WARN"],
+      [`{"level":50,"msg":"pino-level-marker"}`, "ERROR"],
+      [`{"severity":"DEBUG","message":"json-severity-marker"}`, "DEBUG"],
+      [`ts=2026-10-10T12:00:00Z level=error msg=logfmt-marker`, "ERROR"],
+      [`E1010 12:00:00.000000       1 controller.go:42] klog-marker`, "ERROR"],
+      [`2026-10-10 12:00:00.123 [main] WARN  com.example.App - java-marker`, "WARN"],
+      [`2026/10/10 12:00:00 [error] 12#0: nginx-marker`, "ERROR"],
+      [`INFO:root:python-marker`, "INFO"],
+      [`[2026-10-10T12:00:00Z] notice: notice-marker`, "INFO"],
+      [`Information about plain-marker`, null],
+      [`{"msg":"json-without-level-marker"}`, null],
+    ];
+    const time = new Date().toISOString();
+    await Bun.write(join(logDir, "0.log"), [`${time} stdout F cri-marker`, ...levels.map(([line]) => `${time} stderr F ${line}`)].join("\n") + "\n");
     async function records() {
       return (await Bun.file(output).text()).trim().split("\n").filter(Boolean).map((s) => JSON.parse(s));
     }
     await eventually(async () => {
       const text = JSON.stringify(await records());
-      for (const marker of ["otlp-marker", "deployment-marker", "named-marker", "cri-marker", "smoke.gauge", "smoke-span", "k8s.node.cpu"]) expect(text).toContain(marker);
+      for (const marker of ["otlp-marker", "deployment-marker", "named-marker", "cri-marker", "klog-marker", "json-without-level-marker", "smoke.gauge", "smoke-span", "k8s.node.cpu"]) expect(text).toContain(marker);
       expect(kubeletRequests).toBeGreaterThan(0);
     });
     for (const signal of ["logs", "metrics", "traces"]) {
@@ -183,6 +198,12 @@ test("real Collector forwards all signals, parses CRI, and replays durable queue
         expect(attrs["k8s.node.name"]).toBe("collector-node");
         expect(attrs["ezgh.metadata.application"]).toBe("kubernetes");
       }
+    }
+    const logRecords = (await records()).flatMap((r) => r.resourceLogs ?? []).flatMap((r) => r.scopeLogs.flatMap((s) => s.logRecords));
+    for (const [line, expected] of levels) {
+      const record = logRecords.find((l) => l.body?.stringValue === line);
+      expect({ line, severity: record?.severityText ?? null }).toEqual({ line, severity: expected });
+      expect(record.severityNumber ?? 0).toBe(expected ? { DEBUG: 5, INFO: 9, WARN: 13, ERROR: 17 }[expected] : 0);
     }
     unavailable = true;
     await send("logs", logs("durable-replay-marker"));

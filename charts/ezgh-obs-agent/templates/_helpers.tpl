@@ -67,7 +67,36 @@ true
 {{- define "agent.serviceStatements" -}}
 - context: resource
   statements:
-    {{- range list "k8s.deployment.name" "k8s.statefulset.name" "k8s.daemonset.name" "k8s.cronjob.name" "k8s.job.name" }}
+    {{- range list "k8s.deployment.name" "k8s.statefulset.name" "k8s.daemonset.name" "k8s.cronjob.name" "k8s.job.name" "k8s.container.name" }}
     - 'set(attributes["service.name"], attributes["{{ . }}"]) where attributes["{{ . }}"] != nil and attributes["{{ . }}"] != "" and (attributes["service.name"] == nil or attributes["service.name"] == "" or IsMatch(attributes["service.name"], "^unknown_service"))'
+    {{- end }}
+{{- end -}}
+
+{{- /* A container log's level, when the runtime gave none: from a JSON body's level field (or
+pino/bunyan's numbers), logfmt's level=, klog's I/W/E/F prefix, or a leading level word after an
+optional timestamp and [thread]. Nothing matched leaves it unset; stderr isn't taken as an error. */ -}}
+{{- define "agent.severityStatements" -}}
+- context: log
+  conditions:
+    - severity_number == SEVERITY_NUMBER_UNSPECIFIED
+  statements:
+    - 'set(cache["json"], ParseJSON(body)) where IsMatch(body, "^\\s*\\{")'
+    {{- range list "level" "severity" "lvl" "levelname" "log.level" "loglevel" "@l" }}
+    - 'set(cache["level"], cache["json"]["{{ . }}"]) where cache["level"] == nil and cache["json"] != nil and cache["json"]["{{ . }}"] != nil'
+    {{- end }}
+    {{- range $n, $name := dict "10" "trace" "20" "debug" "30" "info" "40" "warn" "50" "error" "60" "fatal" }}
+    - 'set(cache["level"], "{{ $name }}") where cache["level"] == {{ $n }}'
+    {{- end }}
+    - 'merge_maps(cache, ExtractPatterns(body, "(?:^|\\s)(?:level|lvl|severity)=\"?(?P<level>[A-Za-z]+)"), "insert") where cache["level"] == nil'
+    - 'merge_maps(cache, ExtractPatterns(body, "^(?P<klog>[IWEF])\\d{4} \\d{2}:\\d{2}:\\d{2}"), "insert") where cache["level"] == nil'
+    {{- range $k, $name := dict "I" "info" "W" "warn" "E" "error" "F" "fatal" }}
+    - 'set(cache["level"], "{{ $name }}") where cache["level"] == nil and cache["klog"] == "{{ $k }}"'
+    {{- end }}
+    - 'merge_maps(cache, ExtractPatterns(body, "^\\s*(?:\\[?[0-9][0-9TZ:.,/+ -]*\\]?\\s+)?(?:\\[[^\\]]{1,40}\\]\\s+)?[\\[<]?(?P<level>(?i:trace|debug|info|notice|warn|warning|error|err|crit|critical|fatal|panic|alert|emerg))[\\]>]?(?:[\\s:|]|$)"), "insert") where cache["level"] == nil'
+    {{- range $name, $re := dict "TRACE" "trace" "DEBUG" "debug" "INFO" "info|notice" "WARN" "warn|warning" "ERROR" "error|err" "FATAL" "fatal|panic|crit|critical|alert|emerg" }}
+    - 'set(severity_text, "{{ $name }}") where IsString(cache["level"]) and IsMatch(cache["level"], "(?i)^({{ $re }})$")'
+    {{- end }}
+    {{- range $name := list "TRACE" "DEBUG" "INFO" "WARN" "ERROR" "FATAL" }}
+    - 'set(severity_number, SEVERITY_NUMBER_{{ $name }}) where severity_text == "{{ $name }}"'
     {{- end }}
 {{- end -}}

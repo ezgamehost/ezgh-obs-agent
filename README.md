@@ -73,9 +73,10 @@ Each agent watches the pods on its own node through the Kubernetes API
 `k8s.pod.name`, `k8s.pod.uid` and the pod's owner: `k8s.deployment.name`,
 `k8s.statefulset.name`, `k8s.daemonset.name`, `k8s.cronjob.name` or `k8s.job.name`.
 Telemetry without a `service.name`, or with an SDK's `unknown_service…` default,
-is then named after that workload, in that order: a Deployment's pods'
-container logs and pod/container metrics arrive as its service, without any
-application change. A `service.name` the application set is always kept.
+is then named after that workload, in that order, or else its container: a
+Deployment's pods' container logs and pod/container metrics arrive as its
+service, without any application change. A `service.name` the application set
+is always kept.
 `ezgh.metadata.application` is preserved when present; otherwise it falls back
 to `service.name`, then container name, then `kubernetes`.
 
@@ -88,6 +89,20 @@ inconsistently. `Local` means apps on nodes without an agent (taints, selectors)
 can't send. The agent waits up to a minute at startup for the pod list, so the
 first logs are named too; set `kubernetesMetadata.enabled: false` to read nothing
 from the API.
+
+Telemetry sent in a pod's first moment, before the kubelet has reported its IP,
+can't be matched by address; container logs and metrics (matched by UID) can.
+
+### Log levels
+
+Container runtimes record only stdout or stderr. When a container log has no
+level, the agent reads one from the line (`logs.parseSeverity`, default `true`):
+a JSON body's `level`, `severity`, `lvl`, `levelname`, `log.level`, `loglevel`
+or `@l` (and pino/bunyan's numbers), logfmt's `level=`, klog's `I`/`W`/`E`/`F`
+prefix, or a leading level word after an optional timestamp and `[thread]`
+(`INFO`, `[warn]`, `error:`). It's stored as `TRACE`, `DEBUG`, `INFO`, `WARN`,
+`ERROR` or `FATAL` with the matching severity number. Lines without one stay
+unset; stderr isn't assumed to be an error. Application OTLP logs keep their own.
 
 Arbitrary pod-label enrichment, Kubernetes events, cluster-state metrics,
 Prometheus target discovery and automatic application instrumentation are not
@@ -135,6 +150,7 @@ All settings are in [values.yaml](charts/ezgh-obs-agent/values.yaml), with a str
 | `metrics.kubelet.endpoint` | Default node IPv4 address on HTTPS 10250; supports Collector `${env:…}` substitutions. |
 | `metrics.kubelet.caConfigMap`, `metrics.kubelet.caKey` | Custom kubelet CA; otherwise use the ServiceAccount CA. |
 | `metrics.kubelet.insecureSkipVerify` | Default `false`. An explicit opt-out for clusters with untrusted kubelet serving certificates; retains encryption but skips server identity verification. |
+| `logs.parseSeverity` | Default `true`: a container log's level from its text when the runtime has none. |
 | `kubernetesMetadata.enabled` | Default `true`: pod and owner-workload metadata from the API for this node's pods, and service names from workloads. |
 | `otlp.internalTrafficPolicy` | `Cluster` (default) or `Local`. `Local` keeps application OTLP on its node's agent, which then adds the same metadata. |
 | `export.queueSizeMiB` | Default 64 MiB of queued payload **per signal per node**. |

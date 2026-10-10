@@ -99,6 +99,12 @@ processors:
       - sources: [{from: connection}]
       {{- end }}
   {{- end }}
+  {{- if and .Values.logs.enabled .Values.logs.collectContainerLogs .Values.logs.parseSeverity }}
+  transform/severity:
+    error_mode: ignore
+    log_statements:
+      {{- include "agent.severityStatements" . | nindent 6 }}
+  {{- end }}
   transform/application:
     error_mode: ignore
     {{- if .Values.logs.enabled }}
@@ -168,7 +174,7 @@ service:
     {{- if .Values.logs.collectContainerLogs }}
     logs/node:
       receivers: [filelog]
-      processors: [memory_limiter{{ if include "agent.k8sMetadata" . }}, k8sattributes{{ end }}, resource/node, resource/ezgh, transform/application]
+      processors: [memory_limiter{{ if include "agent.k8sMetadata" . }}, k8sattributes{{ end }}, resource/node, resource/ezgh{{ if .Values.logs.parseSeverity }}, transform/severity{{ end }}, transform/application]
       exporters: [otlp_http/logs]
     {{- end }}
     {{- end }}
