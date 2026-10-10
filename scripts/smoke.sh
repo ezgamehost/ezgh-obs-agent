@@ -120,7 +120,7 @@ kubectl -n ezgh-obs rollout status daemonset/ezgh-obs-agent --timeout=180s
 ready=$(kubectl -n ezgh-obs get daemonset ezgh-obs-agent -o jsonpath='{.status.numberReady}')
 [[ "$ready" == 2 ]]
 # Push one trace through the in-cluster OTLP Service (logs/metrics come from the nodes).
-kubectl run smoke-trace --namespace obs-test --image=curlimages/curl:8.12.1 --restart=Never -- \
+kubectl run smoke-trace --namespace obs-test --image=curlimages/curl:8.12.1 --restart=Never --command -- \
   curl --fail --retry 5 --retry-connrefused \
   -H 'Content-Type: application/json' \
   --data '{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"smoke-client"}}]},"scopeSpans":[{"spans":[{"traceId":"0123456789abcdef0123456789abcdef","spanId":"0123456789abcdef","name":"ezgh-smoke-span","startTimeUnixNano":"1791590400000000000","endTimeUnixNano":"1791590400001000000"}]}]}]}' \
