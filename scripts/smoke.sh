@@ -144,19 +144,21 @@ kubectl -n obs-test create job smoke-job --image=curlimages/curl:8.12.1 -- \
   -H 'Content-Type: application/json' \
   --data '{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"unknown_service:curl"}}]},"scopeSpans":[{"spans":[{"traceId":"0123456789abcdef0123456789abcdee","spanId":"0123456789abcdee","name":"ezgh-smoke-job-span","startTimeUnixNano":"1791590400000000000","endTimeUnixNano":"1791590400001000000"}]}]}]}' \
   http://ezgh-obs-agent.ezgh-obs.svc:4318/v1/traces
-for attempt in $(seq 1 60); do
+expected=(
+  'ezgh-smoke-log' 'ezgh-smoke-span' 'k8s.node.cpu'
+  'Str(ezgh-obs-agent-worker)' 'Str(ezgh-obs-agent-worker2)'
+  'ezgh-smoke-deployment-log' 'service.name: Str(smoke-web)' 'k8s.deployment.name: Str(smoke-web)'
+  'service.name: Str(smoke-logs)'
+  'ezgh-smoke-job-span' 'service.name: Str(smoke-job)'
+)
+missing() {
+  local m=()
+  for pattern in "${expected[@]}"; do grep -qF "$pattern" "$scratch/received.log" || m+=("$pattern"); done
+  printf '%s\n' "${m[@]}"
+}
+for _ in $(seq 1 60); do
   kubectl -n obs-test logs deployment/sink > "$scratch/received.log"
-  if grep -q 'ezgh-smoke-log' "$scratch/received.log" && \
-     grep -q 'ezgh-smoke-span' "$scratch/received.log" && \
-     grep -q 'k8s.node.cpu' "$scratch/received.log" && \
-     grep -q 'Str(ezgh-obs-agent-worker)' "$scratch/received.log" && \
-     grep -q 'Str(ezgh-obs-agent-worker2)' "$scratch/received.log" && \
-     grep -q 'ezgh-smoke-deployment-log' "$scratch/received.log" && \
-     grep -q 'service.name: Str(smoke-web)' "$scratch/received.log" && \
-     grep -q 'k8s.deployment.name: Str(smoke-web)' "$scratch/received.log" && \
-     grep -q 'service.name: Str(smoke-logs)' "$scratch/received.log" && \
-     grep -q 'ezgh-smoke-job-span' "$scratch/received.log" && \
-     grep -q 'service.name: Str(smoke-job)' "$scratch/received.log"; then
+  if [[ -z "$(missing)" ]]; then
     kubectl -n ezgh-obs rollout restart daemonset/ezgh-obs-agent
     kubectl -n ezgh-obs rollout status daemonset/ezgh-obs-agent --timeout=180s
     echo 'PASS: two agents, container logs, kubelet metrics, application traces, workload service names, TLS export, rolling restart'
@@ -164,5 +166,11 @@ for attempt in $(seq 1 60); do
   fi
   sleep 2
 done
-echo 'Expected telemetry did not arrive at the test sink' >&2
+echo 'Expected telemetry did not arrive at the test sink. Missing:' >&2
+missing | sed 's/^/  /' >&2
+for span in ezgh-smoke-span ezgh-smoke-job-span; do
+  echo "Resource of $span:" >&2
+  grep -B40 "$span" "$scratch/received.log" | grep -E 'Resource attributes|->' | tail -15 >&2 || true
+done
+kubectl -n obs-test get pods -o wide >&2 || true
 exit 1
