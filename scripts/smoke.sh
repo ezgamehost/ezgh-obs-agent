@@ -156,8 +156,11 @@ missing() {
   for pattern in "${expected[@]}"; do grep -qF "$pattern" "$scratch/received.log" || m+=("$pattern"); done
   printf '%s\n' "${m[@]}"
 }
+# The sink's debug output is large enough for the kubelet to rotate its log during the test, and
+# kubectl logs reads only the current file: keep everything seen so far, appending what's new.
+kubectl -n obs-test logs deployment/sink > "$scratch/received.log"
 for _ in $(seq 1 60); do
-  kubectl -n obs-test logs deployment/sink > "$scratch/received.log"
+  kubectl -n obs-test logs deployment/sink --since=10s >> "$scratch/received.log"
   if [[ -z "$(missing)" ]]; then
     kubectl -n ezgh-obs rollout restart daemonset/ezgh-obs-agent
     kubectl -n ezgh-obs rollout status daemonset/ezgh-obs-agent --timeout=180s
