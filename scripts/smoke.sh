@@ -173,4 +173,10 @@ for span in ezgh-smoke-span ezgh-smoke-job-span; do
   grep -B40 "$span" "$scratch/received.log" | grep -E 'Resource attributes|->' | tail -15 >&2 || true
 done
 kubectl -n obs-test get pods -o wide >&2 || true
+for pod in $(kubectl -n ezgh-obs get pods -l app.kubernetes.io/instance=ezgh-obs-agent -o name); do
+  echo "Self-metrics of $pod:" >&2
+  kubectl get --raw "/api/v1/namespaces/ezgh-obs/pods/${pod#pod/}:8888/proxy/metrics" \
+    | grep -E '^otelcol_(receiver_(accepted|refused)|processor_|exporter_(sent|send_failed|enqueue_failed)|exporter_queue_size)' \
+    | grep -iE 'span|trace|queue_size' >&2 || true
+done
 exit 1
