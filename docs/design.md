@@ -27,5 +27,6 @@ all signals through a local OTLP sink, and a disposable multi-node cluster in CI
 
 No UI, application auto-instrumentation, arbitrary Prometheus discovery, cluster
 state singleton, new ingestion API, or production deployment is included in v1.
-The chart's source and packaged GitHub Release are public; credentials are never
-stored in Helm values. OCI publishing can be added independently later.
+The chart's source and packaged GitHub Release are public, and the same archive is
+published as a public OCI artifact at `oci://ghcr.io/ezgamehost/charts/ezgh-obs-agent`
+(the preferred install source); credentials are never stored in Helm values.

@@ -26,7 +26,7 @@ kubectl -n ezgh-obs create secret generic ezgh-obs-ingest \
   --from-file=ingest-key=./ingest-key.txt
 
 helm upgrade --install ezgh-obs-agent \
-  https://github.com/ezgamehost/ezgh-obs-agent/releases/download/v0.1.0/ezgh-obs-agent-0.1.0.tgz \
+  oci://ghcr.io/ezgamehost/charts/ezgh-obs-agent --version 0.1.0 \
   --namespace ezgh-obs \
   --set cluster.name=production-us-west \
   --set ezgh.environment=production \
@@ -38,7 +38,14 @@ Delete the local token file after storing it securely. For GitOps, provision the
 Secret through your existing secret manager. The chart never creates a Secret
 or stores a credential in Helm values or release history.
 
-To install from source, replace the package URL with `./charts/ezgh-obs-agent`.
+The chart is published as an OCI artifact on GHCR, which is the preferred source
+(`helm pull oci://ghcr.io/ezgamehost/charts/ezgh-obs-agent --version 0.1.0`; Helm
+3.8+ needs no `helm repo add`). The same package is attached to each GitHub
+Release, for networks that can't reach ghcr.io: replace the `oci://…` reference
+and `--version` with
+`https://github.com/ezgamehost/ezgh-obs-agent/releases/download/v0.1.0/ezgh-obs-agent-0.1.0.tgz`
+(checksums in that release's `SHA256SUMS`). To install from source, use
+`./charts/ezgh-obs-agent`.
 See [production values](examples/production.yaml) and [OTLP-only values](examples/otlp-only.yaml).
 
 ## Collection and routing
@@ -207,8 +214,11 @@ TLS export, and a rolling restart. `scripts/smoke.sh` refuses any context other
 than `kind-ezgh-obs-agent`.
 
 To release, increment `Chart.yaml`'s `version`, update the install examples, and
-push the matching `v<version>` tag. The release workflow reruns CI and publishes
-the Helm archive and SHA256SUMS as public GitHub Release assets. This repository
+push the matching `v<version>` tag. The release workflow reruns CI, publishes
+the Helm archive and SHA256SUMS as public GitHub Release assets, pushes the same
+archive to `oci://ghcr.io/ezgamehost/charts`, and checks that it pulls anonymously
+with the pushed digest (`scripts/publish-oci.sh`). Running the workflow by hand
+with an existing tag publishes that release's verified archive to GHCR. This repository
 does not deploy an agent into a production cluster.
 
 Licensed under [Apache-2.0](LICENSE). OpenTelemetry is a CNCF project; this chart
