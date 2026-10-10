@@ -23,7 +23,7 @@ spec:
         checksum/config: {{ include "agent.config" . | sha256sum }}
     spec:
       serviceAccountName: {{ include "agent.name" . }}
-      automountServiceAccountToken: {{ and .Values.metrics.enabled .Values.metrics.collectKubeletMetrics }}
+      automountServiceAccountToken: {{ include "agent.apiAccess" . | eq "true" }}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       securityContext:
         seccompProfile: {type: RuntimeDefault}

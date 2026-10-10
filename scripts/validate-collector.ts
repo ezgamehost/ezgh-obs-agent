@@ -11,6 +11,8 @@ const cases: string[][] = [
   ["--set", "logs.enabled=false,traces.enabled=false"],
   ["--set", "logs.collectContainerLogs=false,metrics.collectKubeletMetrics=false"],
   ["--set", "metrics.kubelet.caConfigMap=kubelet-ca,cluster.uid=stable-uid"],
+  ["--set", "otlp.internalTrafficPolicy=Local"],
+  ["--set", "kubernetesMetadata.enabled=false"],
 ];
 const dir = mkdtempSync(join(tmpdir(), "ezgh-collector-validate-"));
 try {

@@ -48,6 +48,19 @@ metrics:
 traces:
   enabled: true
 
+# Pod and workload metadata from the Kubernetes API, for pods on each agent's own node only.
+# A workload without a service.name (or with an SDK's unknown_service default) is named after its
+# Deployment, StatefulSet, DaemonSet, CronJob or Job. Needs get/list/watch on pods, ReplicaSets
+# and Jobs.
+kubernetesMetadata:
+  enabled: true
+
+otlp:
+  # The in-cluster Service's internalTrafficPolicy. Local sends each app's OTLP to the agent on its
+  # own node, which then adds the same pod and workload metadata; apps on nodes without an agent
+  # can't send. Cluster (the default) lets any agent receive it, and leaves it as sent.
+  internalTrafficPolicy: Cluster
+
 export:
   # Per signal, per node. Queue size bounds serialized payload, not total filesystem use.
   queueSizeMiB: 64

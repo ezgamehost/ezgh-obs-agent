@@ -73,18 +73,47 @@ processors:
     attributes:
       - {key: k8s.node.name, value: "${env:NODE_NAME}", action: upsert}
   {{- end }}
+  {{- if include "agent.k8sMetadata" . }}
+  k8sattributes:
+    auth_type: serviceAccount
+    # Only this node's pods: each agent watches what it collects, not the whole cluster.
+    filter:
+      node_from_env_var: NODE_NAME
+    # Hold telemetry at startup until the pod list has synced, so the first logs are named too.
+    wait_for_metadata: true
+    wait_for_metadata_timeout: 1m
+    extract:
+      metadata:
+        - k8s.namespace.name
+        - k8s.pod.name
+        - k8s.pod.uid
+        - k8s.deployment.name
+        - k8s.statefulset.name
+        - k8s.daemonset.name
+        - k8s.cronjob.name
+        - k8s.job.name
+    pod_association:
+      - sources: [{from: resource_attribute, name: k8s.pod.uid}]
+      {{- if include "agent.k8sMetadataOtlp" . }}
+      - sources: [{from: resource_attribute, name: k8s.pod.ip}]
+      - sources: [{from: connection}]
+      {{- end }}
+  {{- end }}
   transform/application:
     error_mode: ignore
     {{- if .Values.logs.enabled }}
     log_statements:
+      {{- include "agent.serviceStatements" . | nindent 6 }}
       {{- include "agent.applicationStatements" . | nindent 6 }}
     {{- end }}
     {{- if .Values.metrics.enabled }}
     metric_statements:
+      {{- include "agent.serviceStatements" . | nindent 6 }}
       {{- include "agent.applicationStatements" . | nindent 6 }}
     {{- end }}
     {{- if .Values.traces.enabled }}
     trace_statements:
+      {{- include "agent.serviceStatements" . | nindent 6 }}
       {{- include "agent.applicationStatements" . | nindent 6 }}
     {{- end }}
 
@@ -134,31 +163,31 @@ service:
     {{- if .Values.logs.enabled }}
     logs:
       receivers: [otlp]
-      processors: [memory_limiter, resource/ezgh, transform/application]
+      processors: [memory_limiter{{ if include "agent.k8sMetadataOtlp" . }}, k8sattributes{{ end }}, resource/ezgh, transform/application]
       exporters: [otlp_http/logs]
     {{- if .Values.logs.collectContainerLogs }}
     logs/node:
       receivers: [filelog]
-      processors: [memory_limiter, resource/node, resource/ezgh, transform/application]
+      processors: [memory_limiter{{ if include "agent.k8sMetadata" . }}, k8sattributes{{ end }}, resource/node, resource/ezgh, transform/application]
       exporters: [otlp_http/logs]
     {{- end }}
     {{- end }}
     {{- if .Values.metrics.enabled }}
     metrics:
       receivers: [otlp]
-      processors: [memory_limiter, resource/ezgh, transform/application]
+      processors: [memory_limiter{{ if include "agent.k8sMetadataOtlp" . }}, k8sattributes{{ end }}, resource/ezgh, transform/application]
       exporters: [otlp_http/metrics]
     {{- if .Values.metrics.collectKubeletMetrics }}
     metrics/node:
       receivers: [kubelet_stats]
-      processors: [memory_limiter, resource/node, resource/ezgh, transform/application]
+      processors: [memory_limiter{{ if include "agent.k8sMetadata" . }}, k8sattributes{{ end }}, resource/node, resource/ezgh, transform/application]
       exporters: [otlp_http/metrics]
     {{- end }}
     {{- end }}
     {{- if .Values.traces.enabled }}
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, resource/ezgh, transform/application]
+      processors: [memory_limiter{{ if include "agent.k8sMetadataOtlp" . }}, k8sattributes{{ end }}, resource/ezgh, transform/application]
       exporters: [otlp_http/traces]
     {{- end }}
 {{- end -}}

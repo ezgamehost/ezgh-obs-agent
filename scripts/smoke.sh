@@ -94,13 +94,26 @@ spec:
         - name: logger
           image: busybox:1.37.0
           command: [sh, -c, 'while true; do echo ezgh-smoke-log; sleep 2; done']
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: smoke-web, namespace: default}
+spec:
+  selector: {matchLabels: {app: smoke-web}}
+  template:
+    metadata: {labels: {app: smoke-web}}
+    spec:
+      containers:
+        - name: web
+          image: busybox:1.37.0
+          command: [sh, -c, 'while true; do echo ezgh-smoke-deployment-log; sleep 2; done']
 EOF
 kubectl apply -f "$scratch/sink.yaml"
 kubectl -n obs-test rollout status deployment/sink --timeout=180s
 helm upgrade --install ezgh-obs-agent charts/ezgh-obs-agent --namespace ezgh-obs \
   -f tests/values.yaml --set ezgh.endpoint=https://sink.obs-test.svc \
   --set metrics.kubelet.insecureSkipVerify=true --set metrics.collectionInterval=5s \
-  --set 'logs.excludeNamespaces[0]=obs-test'
+  --set 'logs.excludeNamespaces[0]=obs-test' --set otlp.internalTrafficPolicy=Local
 # Trust only the disposable sink CA for this test. Production uses the system CA bundle.
 kubectl -n ezgh-obs patch daemonset ezgh-obs-agent --type=strategic --patch '
 spec:
@@ -125,16 +138,28 @@ kubectl run smoke-trace --namespace obs-test --image=curlimages/curl:8.12.1 --re
   -H 'Content-Type: application/json' \
   --data '{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"smoke-client"}}]},"scopeSpans":[{"spans":[{"traceId":"0123456789abcdef0123456789abcdef","spanId":"0123456789abcdef","name":"ezgh-smoke-span","startTimeUnixNano":"1791590400000000000","endTimeUnixNano":"1791590400001000000"}]}]}]}' \
   http://ezgh-obs-agent.ezgh-obs.svc:4318/v1/traces
+# A span with only the SDK's default name, from a Job: its node's agent names it after the Job.
+kubectl -n obs-test create job smoke-job --image=curlimages/curl:8.12.1 -- \
+  curl --fail --retry 5 --retry-connrefused \
+  -H 'Content-Type: application/json' \
+  --data '{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"unknown_service:curl"}}]},"scopeSpans":[{"spans":[{"traceId":"0123456789abcdef0123456789abcdee","spanId":"0123456789abcdee","name":"ezgh-smoke-job-span","startTimeUnixNano":"1791590400000000000","endTimeUnixNano":"1791590400001000000"}]}]}]}' \
+  http://ezgh-obs-agent.ezgh-obs.svc:4318/v1/traces
 for attempt in $(seq 1 60); do
   kubectl -n obs-test logs deployment/sink > "$scratch/received.log"
   if grep -q 'ezgh-smoke-log' "$scratch/received.log" && \
      grep -q 'ezgh-smoke-span' "$scratch/received.log" && \
      grep -q 'k8s.node.cpu' "$scratch/received.log" && \
      grep -q 'Str(ezgh-obs-agent-worker)' "$scratch/received.log" && \
-     grep -q 'Str(ezgh-obs-agent-worker2)' "$scratch/received.log"; then
+     grep -q 'Str(ezgh-obs-agent-worker2)' "$scratch/received.log" && \
+     grep -q 'ezgh-smoke-deployment-log' "$scratch/received.log" && \
+     grep -q 'service.name: Str(smoke-web)' "$scratch/received.log" && \
+     grep -q 'k8s.deployment.name: Str(smoke-web)' "$scratch/received.log" && \
+     grep -q 'service.name: Str(smoke-logs)' "$scratch/received.log" && \
+     grep -q 'ezgh-smoke-job-span' "$scratch/received.log" && \
+     grep -q 'service.name: Str(smoke-job)' "$scratch/received.log"; then
     kubectl -n ezgh-obs rollout restart daemonset/ezgh-obs-agent
     kubectl -n ezgh-obs rollout status daemonset/ezgh-obs-agent --timeout=180s
-    echo 'PASS: two agents, container logs, kubelet metrics, application traces, TLS export, rolling restart'
+    echo 'PASS: two agents, container logs, kubelet metrics, application traces, workload service names, TLS export, rolling restart'
     exit 0
   fi
   sleep 2

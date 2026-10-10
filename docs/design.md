@@ -9,8 +9,13 @@ One release targets one project (selected by an existing Secret's ingest key)
 and one environment. Installation overwrites the environment and cluster name;
 it preserves application/service attributes and fills missing application names.
 Node identity is attached only to locally collected telemetry, never to arbitrary
-OTLP traffic routed by the Service. No Kubernetes metadata watch cache is added.
-Log identity comes from CRI paths; metric identity comes from kubelet responses.
+OTLP traffic routed by the Service. Log identity comes from CRI paths; metric
+identity comes from kubelet responses. Since 0.2.0 each agent also watches its own
+node's pods (k8sattributes, node-filtered; read-only pods, ReplicaSets and Jobs)
+to add pod and owner-workload metadata, and names telemetry without a real
+`service.name` after its Deployment (or StatefulSet, DaemonSet, CronJob, Job).
+Application OTLP is enriched only when the Service's internalTrafficPolicy is
+Local, so a pod is never matched by an agent that doesn't watch it.
 
 Use pinned upstream components, read-only log mounts, root without capabilities
 for host-file access, read-only root filesystem, and a dedicated writable hostPath

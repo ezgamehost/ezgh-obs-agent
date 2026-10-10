@@ -26,7 +26,7 @@ kubectl -n ezgh-obs create secret generic ezgh-obs-ingest \
   --from-file=ingest-key=./ingest-key.txt
 
 helm upgrade --install ezgh-obs-agent \
-  oci://ghcr.io/ezgamehost/charts/ezgh-obs-agent --version 0.1.0 \
+  oci://ghcr.io/ezgamehost/charts/ezgh-obs-agent --version 0.2.0 \
   --namespace ezgh-obs \
   --set cluster.name=production-us-west \
   --set ezgh.environment=production \
@@ -39,11 +39,11 @@ Secret through your existing secret manager. The chart never creates a Secret
 or stores a credential in Helm values or release history.
 
 The chart is published as an OCI artifact on GHCR, which is the preferred source
-(`helm pull oci://ghcr.io/ezgamehost/charts/ezgh-obs-agent --version 0.1.0`; Helm
+(`helm pull oci://ghcr.io/ezgamehost/charts/ezgh-obs-agent --version 0.2.0`; Helm
 3.8+ needs no `helm repo add`). The same package is attached to each GitHub
 Release, for networks that can't reach ghcr.io: replace the `oci://…` reference
 and `--version` with
-`https://github.com/ezgamehost/ezgh-obs-agent/releases/download/v0.1.0/ezgh-obs-agent-0.1.0.tgz`
+`https://github.com/ezgamehost/ezgh-obs-agent/releases/download/v0.2.0/ezgh-obs-agent-0.2.0.tgz`
 (checksums in that release's `SHA256SUMS`). To install from source, use
 `./charts/ezgh-obs-agent`.
 See [production values](examples/production.yaml) and [OTLP-only values](examples/otlp-only.yaml).
@@ -65,14 +65,33 @@ An environment must match `[a-z0-9][a-z0-9._-]{0,62}`.
 Cluster name and optional UID are installation-wide resource attributes. Keep
 the name stable and unique within the project. Node-local logs and metrics get
 the actual node name; incoming application OTLP retains its source node identity.
-`ezgh.metadata.application` is preserved when present; otherwise it falls back
-to `service.name`, then container name, then `kubernetes`. `service.name` is preserved.
 
-This chart does not use a Kubernetes metadata informer/cache. Log identity comes
-from file paths, metric identity from kubelet responses, and application identity
-from OTLP resource attributes. Deployment-owner and arbitrary pod-label enrichment,
-Kubernetes events, cluster-state metrics, Prometheus target discovery and automatic
-application instrumentation are outside v1.
+### Service names from workloads
+
+Each agent watches the pods on its own node through the Kubernetes API
+(`k8sattributes`, filtered to the node) and adds `k8s.namespace.name`,
+`k8s.pod.name`, `k8s.pod.uid` and the pod's owner: `k8s.deployment.name`,
+`k8s.statefulset.name`, `k8s.daemonset.name`, `k8s.cronjob.name` or `k8s.job.name`.
+Telemetry without a `service.name`, or with an SDK's `unknown_service…` default,
+is then named after that workload, in that order: a Deployment's pods'
+container logs and pod/container metrics arrive as its service, without any
+application change. A `service.name` the application set is always kept.
+`ezgh.metadata.application` is preserved when present; otherwise it falls back
+to `service.name`, then container name, then `kubernetes`.
+
+This applies to container logs and kubelet pod/container metrics (matched by pod
+UID; node metrics have no pod). Application OTLP gets it only with
+`otlp.internalTrafficPolicy: Local`: the Service then keeps each app's traffic on
+its own node's agent, which knows the sending pod by its address. With the default
+`Cluster`, any agent may receive it, so it's left as sent rather than named
+inconsistently. `Local` means apps on nodes without an agent (taints, selectors)
+can't send. The agent waits up to a minute at startup for the pod list, so the
+first logs are named too; set `kubernetesMetadata.enabled: false` to read nothing
+from the API.
+
+Arbitrary pod-label enrichment, Kubernetes events, cluster-state metrics,
+Prometheus target discovery and automatic application instrumentation are not
+included.
 
 ## Send application telemetry
 
@@ -88,7 +107,9 @@ OTEL_RESOURCE_ATTRIBUTES=ezgh.metadata.application=storefront
 For gRPC, use `http://ezgh-obs-agent.ezgh-obs.svc:4317` and protocol `grpc`.
 Applications do not need the EZGH ingest key; only agents receive it. Configure
 application pod/namespace/node resource attributes through the SDK and Downward
-API if you want that correlation. The Service may send data to any agent node.
+API if you want that correlation, or set `otlp.internalTrafficPolicy: Local` so the
+agent adds it (see [Service names from workloads](#service-names-from-workloads));
+by default the Service may send data to any agent node.
 
 The internal OTLP receiver is plaintext and unauthenticated. All pods able to
 reach it can submit data to this installation's project. Use your cluster's
@@ -114,6 +135,8 @@ All settings are in [values.yaml](charts/ezgh-obs-agent/values.yaml), with a str
 | `metrics.kubelet.endpoint` | Default node IPv4 address on HTTPS 10250; supports Collector `${env:…}` substitutions. |
 | `metrics.kubelet.caConfigMap`, `metrics.kubelet.caKey` | Custom kubelet CA; otherwise use the ServiceAccount CA. |
 | `metrics.kubelet.insecureSkipVerify` | Default `false`. An explicit opt-out for clusters with untrusted kubelet serving certificates; retains encryption but skips server identity verification. |
+| `kubernetesMetadata.enabled` | Default `true`: pod and owner-workload metadata from the API for this node's pods, and service names from workloads. |
+| `otlp.internalTrafficPolicy` | `Cluster` (default) or `Local`. `Local` keeps application OTLP on its node's agent, which then adds the same metadata. |
 | `export.queueSizeMiB` | Default 64 MiB of queued payload **per signal per node**. |
 | `export.storageMaxMiB` | Default 128 MiB per storage database, including storage overhead. Must exceed the queue size. |
 | `storage.hostPath` | Base directory; namespace and release name are appended. |
@@ -133,7 +156,8 @@ node-local queue directory. It drops every Linux capability, disables privilege
 escalation, uses a read-only root filesystem and RuntimeDefault seccomp, and does
 not use privileged mode, host networking, host PID, or a runtime socket.
 The log hostPath is read-only. Kubelet access grants only `get` on `nodes/stats`;
-the chart cannot read Kubernetes Secrets through the API.
+pod metadata needs only `get`, `list` and `watch` on pods, ReplicaSets and Jobs.
+The chart cannot read Kubernetes Secrets through the API.
 
 File offsets and three independent export queues use persistent node storage with
 fsync. Telemetry is enqueued before exporter batching. Batches are bounded to
@@ -198,7 +222,7 @@ bun run lint
 bun run test
 bun run validate
 bun run test:integration
-bun run package                    # dist/ezgh-obs-agent-0.1.0.tgz
+bun run package                    # dist/ezgh-obs-agent-0.2.0.tgz
 ```
 
 Set `COLLECTOR_BIN` to use an existing binary. Offline validation substitutes

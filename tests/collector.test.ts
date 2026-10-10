@@ -88,6 +88,12 @@ test("real Collector forwards all signals, parses CRI, and replays durable queue
     config.receivers.kubelet_stats.key_file = key;
     config.receivers.kubelet_stats.insecure_skip_verify = true;
     config.receivers.kubelet_stats.ca_file = cert;
+    // No Kubernetes API here: the kind smoke test covers pod metadata; this one checks the naming
+    // rule on attributes as k8sattributes would leave them.
+    delete config.processors.k8sattributes;
+    for (const pipeline of Object.values(config.service.pipelines) as any[]) {
+      pipeline.processors = pipeline.processors.filter((p: string) => p !== "k8sattributes");
+    }
     config.extensions.file_storage.directory = join(dir, "storage");
     config.extensions.file_storage.compaction.directory = join(dir, "compaction");
     config.extensions.health_check.endpoint = `127.0.0.1:${healthPort}`;
@@ -128,6 +134,14 @@ test("real Collector forwards all signals, parses CRI, and replays durable queue
       logRecords: [{ timeUnixNano: now, body: { stringValue: body } }],
     }] }] });
     await send("logs", logs("otlp-marker"));
+    // An SDK's default name gives way to the Deployment's; a name the app chose doesn't.
+    const owned = (service: string, body: string) => ({ resourceLogs: [{ resource: { attributes: [
+      { key: "service.name", value: { stringValue: service } },
+      { key: "k8s.deployment.name", value: { stringValue: "storefront-web" } },
+      { key: "k8s.node.name", value: { stringValue: "application-node" } },
+    ] }, scopeLogs: [{ logRecords: [{ timeUnixNano: now, body: { stringValue: body } }] }] }] })
+    await send("logs", owned("unknown_service:node", "deployment-marker"));
+    await send("logs", owned("cart-api", "named-marker"));
     await send("metrics", { resourceMetrics: [{ resource: { attributes }, scopeMetrics: [{ metrics: [{
       name: "smoke.gauge", gauge: { dataPoints: [{ timeUnixNano: now, asDouble: 42 }] },
     }] }] }] });
@@ -141,7 +155,7 @@ test("real Collector forwards all signals, parses CRI, and replays durable queue
     }
     await eventually(async () => {
       const text = JSON.stringify(await records());
-      for (const marker of ["otlp-marker", "cri-marker", "smoke.gauge", "smoke-span", "k8s.node.cpu"]) expect(text).toContain(marker);
+      for (const marker of ["otlp-marker", "deployment-marker", "named-marker", "cri-marker", "smoke.gauge", "smoke-span", "k8s.node.cpu"]) expect(text).toContain(marker);
       expect(kubeletRequests).toBeGreaterThan(0);
     });
     for (const signal of ["logs", "metrics", "traces"]) {
@@ -153,7 +167,12 @@ test("real Collector forwards all signals, parses CRI, and replays durable queue
       const attrs = Object.fromEntries(r.resource.attributes.map((a) => [a.key, a.value.stringValue]));
       expect(attrs["ezgh.metadata.environment"]).toBe("production");
       expect(attrs["k8s.cluster.name"]).toBe("test-cluster");
-      if (attrs["service.name"] === "checkout") {
+      if (attrs["k8s.deployment.name"] === "storefront-web") {
+        const body = JSON.stringify(r);
+        const expected = body.includes("deployment-marker") ? "storefront-web" : "cart-api";
+        expect(attrs["service.name"]).toBe(expected);
+        expect(attrs["ezgh.metadata.application"]).toBe(expected);
+      } else if (attrs["service.name"] === "checkout") {
         expect(attrs["k8s.node.name"]).toBe("application-node");
         expect(attrs["ezgh.metadata.application"]).toBe("checkout");
       } else if (attrs["k8s.container.name"] === "app") {
