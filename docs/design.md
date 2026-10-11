@@ -11,7 +11,7 @@ it preserves application/service attributes and fills missing application names.
 Node identity is attached only to locally collected telemetry, never to arbitrary
 OTLP traffic routed by the Service. Log identity comes from CRI paths; metric
 identity comes from kubelet responses. Since 0.2.0 each agent also watches its own
-node's pods (k8sattributes, node-filtered; read-only pods, ReplicaSets and Jobs)
+node's pods (k8s_attributes, node-filtered; read-only pods, ReplicaSets and Jobs)
 to add pod and owner-workload metadata, and names telemetry without a real
 `service.name` after its Deployment (or StatefulSet, DaemonSet, CronJob, Job).
 Application OTLP is enriched only when the Service's internalTrafficPolicy is
@@ -45,7 +45,7 @@ Since 0.3.0 (for EZGH's built-in Kubernetes dashboards, service-template
   `k8s_cluster` (with node conditions, allocatable, PVC and status-reason metrics) and
   `k8s_objects` on `events.k8s.io` Events, which become logs (`kubernetes-events`; note as body,
   Warning/Normal as WARN/INFO; reason, type, object and count attributes; DELETED watch events,
-  which are TTL expiry, dropped). A cluster-wide `k8sattributes` names pods' workloads so `job`
+  which are TTL expiry, dropped). A cluster-wide `k8s_attributes` names pods' workloads so `job`
   matches the kubelet metrics. Own ServiceAccount and read-only ClusterRole, so the DaemonSet's
   RBAC doesn't grow; non-root, no host paths, queues in an emptyDir. Two replicas would double
   every series; leader election is a later option.

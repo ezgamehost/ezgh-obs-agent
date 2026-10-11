@@ -35,9 +35,9 @@ describe("Helm installation contract", () => {
     for (const [name, pipeline] of Object.entries(config.service.pipelines) as any) {
       expect(pipeline.processors.includes("resource/node")).toBe(name.endsWith("/node"));
       // Node-local sources get pod metadata; OTLP may have come from another node's pod.
-      expect(pipeline.processors.includes("k8sattributes")).toBe(name.endsWith("/node"));
+      expect(pipeline.processors.includes("k8s_attributes")).toBe(name.endsWith("/node"));
     }
-    const k8s = config.processors.k8sattributes;
+    const k8s = config.processors.k8s_attributes;
     expect(k8s.filter.node_from_env_var).toBe("NODE_NAME");
     expect(k8s.pod_association).toEqual([{ sources: [{ from: "resource_attribute", name: "k8s.pod.uid" }] }]);
     expect(k8s.extract.metadata).toContain("k8s.deployment.name");
@@ -83,9 +83,9 @@ describe("Helm installation contract", () => {
   test("Local traffic policy gives application OTLP its pod's metadata", () => {
     const { documents, config } = render(["--set", "otlp.internalTrafficPolicy=Local"]);
     for (const pipeline of Object.values(config.service.pipelines) as any) {
-      expect(pipeline.processors).toContain("k8sattributes");
+      expect(pipeline.processors).toContain("k8s_attributes");
     }
-    expect(config.processors.k8sattributes.pod_association.at(-1)).toEqual({ sources: [{ from: "connection" }] });
+    expect(config.processors.k8s_attributes.pod_association.at(-1)).toEqual({ sources: [{ from: "connection" }] });
     expect(documents.find((d) => d.kind === "Service").spec.internalTrafficPolicy).toBe("Local");
     const tracesOnly = render(["--set", "logs.enabled=false,metrics.enabled=false,otlp.internalTrafficPolicy=Local"]);
     expect(agentRole(tracesOnly.documents).rules.map((r) => r.resources[0]))
@@ -95,8 +95,8 @@ describe("Helm installation contract", () => {
 
   test("kubernetesMetadata.enabled=false reads nothing from the Kubernetes API", () => {
     const { documents, config } = render(["--set", "kubernetesMetadata.enabled=false,otlp.internalTrafficPolicy=Local"]);
-    expect(config.processors.k8sattributes).toBeUndefined();
-    for (const pipeline of Object.values(config.service.pipelines) as any) expect(pipeline.processors).not.toContain("k8sattributes");
+    expect(config.processors.k8s_attributes).toBeUndefined();
+    for (const pipeline of Object.values(config.service.pipelines) as any) expect(pipeline.processors).not.toContain("k8s_attributes");
     expect(agentRole(documents).rules.map((r) => r.resources[0])).toEqual(["nodes/stats", "nodes/pods"]);
   });
 
@@ -124,11 +124,11 @@ describe("Helm installation contract", () => {
 
   test("namespace exclusions and own-pod exclusion prevent collection loops", () => {
     const { config } = render(["--set", "logs.excludeNamespaces[0]=private"]);
-    expect(config.receivers.filelog.exclude).toContain("/var/log/pods/private_*/*/*.log");
-    expect(config.receivers.filelog.exclude).toContain("/var/log/pods/${env:POD_NAMESPACE}_${env:POD_NAME}_*/*/*.log");
+    expect(config.receivers.file_log.exclude).toContain("/var/log/pods/private_*/*/*.log");
+    expect(config.receivers.file_log.exclude).toContain("/var/log/pods/${env:POD_NAMESPACE}_${env:POD_NAME}_*/*/*.log");
     // The cluster-state Deployment's pods are the agent's too.
-    expect(config.receivers.filelog.exclude).toContain("/var/log/pods/${env:POD_NAMESPACE}_ezgh-obs-agent-cluster-*_*/*/*.log");
-    expect(render(["--set", "clusterState.enabled=false"]).config.receivers.filelog.exclude)
+    expect(config.receivers.file_log.exclude).toContain("/var/log/pods/${env:POD_NAMESPACE}_ezgh-obs-agent-cluster-*_*/*/*.log");
+    expect(render(["--set", "clusterState.enabled=false"]).config.receivers.file_log.exclude)
       .not.toContain("/var/log/pods/${env:POD_NAMESPACE}_ezgh-obs-agent-cluster-*_*/*/*.log");
   });
 
@@ -201,24 +201,30 @@ describe("Helm installation contract", () => {
     const deployment = documents.find((d) => d.kind === "Deployment").metadata.name;
     // Pods are <deployment>-<hash>-<suffix>, the generated prefix cut to 58 characters.
     const podName = `${deployment}-5d9f7c6b8d-`.slice(0, 58) + "x7k2p";
-    const pattern = config.receivers.filelog.exclude.find((e: string) => e.includes("-cluster") || e.includes(deployment.slice(0, 40)));
+    const pattern = config.receivers.file_log.exclude.find((e: string) => e.includes("-cluster") || e.includes(deployment.slice(0, 40)));
     const glob = new Bun.Glob(pattern.replace("${env:POD_NAMESPACE}", "ezgh-obs"));
     expect(glob.match(`/var/log/pods/ezgh-obs_${podName}_uid/collector/0.log`)).toBe(true);
     expect(glob.match(`/var/log/pods/ezgh-obs_${release}-abcde_uid/collector/0.log`)).toBe(false);
   });
 
+  // The telemetry resource as name → value (it's written as service.telemetry.resource.attributes,
+  // the list form; the inline map is deprecated).
+  const resourceOf = (c: any): Record<string, string> =>
+    Object.fromEntries(c.service.telemetry.resource.attributes.map((a: { name: string, value: string }) => [a.name, a.value]));
+
   test("each agent sends its own metrics to its own OTLP receiver every 60 s", () => {
     const { config, clusterConfig } = render();
     for (const [c, instance] of [[config, "${env:NODE_NAME}"], [clusterConfig, "cluster-state"]] as const) {
       const telemetry = c.service.telemetry;
-      expect(telemetry.resource["service.name"]).toBe("ezgh-obs-agent");
-      expect(telemetry.resource["service.instance.id"]).toBe(instance);
-      expect(telemetry.resource["k8s.cluster.name"]).toBe("${env:CLUSTER_NAME}");
+      const resource = resourceOf(c);
+      expect(resource["service.name"]).toBe("ezgh-obs-agent");
+      expect(resource["service.instance.id"]).toBe(instance);
+      expect(resource["k8s.cluster.name"]).toBe("${env:CLUSTER_NAME}");
       expect(telemetry.metrics.readers[0].pull.exporter.prometheus.port).toBe(8888);
       expect(telemetry.metrics.readers[1].periodic).toMatchObject({ interval: 60000,
         exporter: { otlp: { protocol: "http/protobuf", endpoint: "http://127.0.0.1:4318/v1/metrics" } } });
     }
-    expect(config.service.telemetry.resource["k8s.node.name"]).toBe("${env:NODE_NAME}");
+    expect(resourceOf(config)["k8s.node.name"]).toBe("${env:NODE_NAME}");
     // The Deployment's receiver takes only its own telemetry.
     expect(clusterConfig.receivers.otlp.protocols).toEqual({ http: { endpoint: "127.0.0.1:4318" } });
     expect(clusterConfig.service.pipelines["metrics/self"].receivers).toEqual(["otlp"]);
@@ -269,8 +275,8 @@ describe("Helm installation contract", () => {
     expect(Object.keys(cluster.metrics)).toEqual(["k8s.node.condition", "k8s.pod.status_reason", "k8s.container.status.reason",
       "k8s.persistentvolumeclaim.status.phase", "k8s.persistentvolumeclaim.storage.capacity", "k8s.persistentvolumeclaim.storage.request"]);
     expect(clusterConfig.service.pipelines["metrics/cluster"].processors)
-      .toEqual(["memory_limiter", "k8sattributes", "resource/ezgh", "transform/application", "transform/k8slabels"]);
-    expect(clusterConfig.processors.k8sattributes.filter).toBeUndefined();
+      .toEqual(["memory_limiter", "k8s_attributes", "resource/ezgh", "transform/application", "transform/k8slabels"]);
+    expect(clusterConfig.processors.k8s_attributes.filter).toBeUndefined();
     expect(clusterConfig.service.pipelines["logs/events"]).toEqual({ receivers: ["k8s_objects"],
       processors: ["memory_limiter", "resource/ezgh", "transform/events", "transform/application"], exporters: ["otlp_http/logs"] });
     expect(Object.keys(clusterConfig.exporters)).toEqual(["otlp_http/logs", "otlp_http/metrics"]);

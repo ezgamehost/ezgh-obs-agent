@@ -180,11 +180,20 @@ kubectl -n obs-test logs deployment/sink > "$scratch/received.log"
 for _ in $(seq 1 120); do
   kubectl -n obs-test logs deployment/sink --since=10s >> "$scratch/received.log"
   if [[ -z "$(missing)" ]]; then
+    # The full configs (k8s_attributes, file_log, k8s_cluster, k8s_objects, telemetry resource)
+    # log no deprecation warnings.
+    deprecations=$(kubectl -n ezgh-obs logs -l app.kubernetes.io/instance=ezgh-obs-agent --tail=-1 --prefix \
+      | grep '"level":"warn"' | grep -iE 'deprecated|legacy' || true)
+    if [[ -n "$deprecations" ]]; then
+      echo 'The agents logged deprecation warnings:' >&2
+      echo "$deprecations" >&2
+      exit 1
+    fi
     kubectl -n ezgh-obs rollout restart daemonset/ezgh-obs-agent
     kubectl -n ezgh-obs rollout status daemonset/ezgh-obs-agent --timeout=180s
     kubectl -n ezgh-obs rollout restart deployment/ezgh-obs-agent-cluster
     kubectl -n ezgh-obs rollout status deployment/ezgh-obs-agent-cluster --timeout=180s
-    echo 'PASS: two agents, container logs, kubelet metrics, Kubernetes labels, cluster state, events, self-telemetry, application traces, workload service names, TLS export, rolling restart'
+    echo 'PASS: two agents, container logs, kubelet metrics, Kubernetes labels, cluster state, events, self-telemetry, application traces, workload service names, TLS export, no deprecation warnings, rolling restart'
     exit 0
   fi
   sleep 2

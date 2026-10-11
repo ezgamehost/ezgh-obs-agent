@@ -45,6 +45,14 @@ async function eventually(check: () => Promise<void>, timeout = 15000) {
   throw error;
 }
 
+// The chart's configs use current component names and formats: the Collector logs no deprecation
+// warnings for them ("alias is deprecated", "legacy … format").
+async function expectNoDeprecations(log: string) {
+  const warnings = (await Bun.file(log).text()).split("\n")
+    .filter((line) => /"level":"warn"/.test(line) && /deprecated|legacy/i.test(line));
+  expect(warnings).toEqual([]);
+}
+
 test("real Collector forwards all signals, parses CRI, and replays durable queues after restart", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ezgh-collector-test-"));
   const children: ReturnType<typeof Bun.spawn>[] = [];
@@ -130,10 +138,10 @@ test("real Collector forwards all signals, parses CRI, and replays durable queue
       receiver.ca_file = cert;
     }
     // No Kubernetes API here: the kind smoke test covers pod metadata; this one checks the naming
-    // rule on attributes as k8sattributes would leave them.
-    delete config.processors.k8sattributes;
+    // rule on attributes as k8s_attributes would leave them.
+    delete config.processors.k8s_attributes;
     for (const pipeline of Object.values(config.service.pipelines) as any[]) {
-      pipeline.processors = pipeline.processors.filter((p: string) => p !== "k8sattributes");
+      pipeline.processors = pipeline.processors.filter((p: string) => p !== "k8s_attributes");
     }
     config.extensions.file_storage.directory = join(dir, "storage");
     config.extensions.file_storage.compaction.directory = join(dir, "compaction");
@@ -149,7 +157,7 @@ test("real Collector forwards all signals, parses CRI, and replays durable queue
     const logRoot = join(dir, "var/log/pods");
     const logDir = join(logRoot, "default_checkout-abc_12345678-1234-1234-1234-123456789abc/app");
     mkdirSync(logDir, { recursive: true });
-    config.receivers.filelog.include = [`${logRoot}/*/*/*.log`];
+    config.receivers.file_log.include = [`${logRoot}/*/*/*.log`];
     for (const exporter of Object.values(config.exporters) as any[]) {
       exporter.endpoint = `http://127.0.0.1:${proxy.port}`;
     }
@@ -295,6 +303,7 @@ test("real Collector forwards all signals, parses CRI, and replays durable queue
     agent = await launch("agent", config, env);
     await healthy();
     await eventually(async () => expect(JSON.stringify(await records())).toContain("durable-replay-marker"));
+    await expectNoDeprecations(join(dir, "agent.log"));
   } catch (error) {
     for (const name of ["agent", "sink"]) {
       const file = Bun.file(join(dir, `${name}.log`));
@@ -336,9 +345,9 @@ test("cluster-state Collector: events become logs, metrics get Kubernetes labels
     config.receivers.otlp.protocols.http.endpoint = `127.0.0.1:${selfPort}`;
     config.service.pipelines["logs/events"].receivers = ["otlp/events"];
     config.service.pipelines["metrics/cluster"].receivers = ["otlp/cluster"];
-    delete config.processors.k8sattributes;
+    delete config.processors.k8s_attributes;
     for (const pipeline of Object.values(config.service.pipelines) as any[]) {
-      pipeline.processors = pipeline.processors.filter((p: string) => p !== "k8sattributes");
+      pipeline.processors = pipeline.processors.filter((p: string) => p !== "k8s_attributes");
     }
     const selfReader = config.service.telemetry.metrics.readers[1].periodic;
     selfReader.interval = 1000;
@@ -377,7 +386,7 @@ test("cluster-state Collector: events become logs, metrics get Kubernetes labels
       event("web.def", { reason: "ScalingReplicaSet", type: "Normal", note: "Scaled up replica set web-5d9 to 2",
         regarding: { kind: "Deployment", name: "web", namespace: "shop" }, deprecatedCount: 3 }),
     ] });
-    // What k8s_cluster emits for a pod: workload attributes as k8sattributes would leave them.
+    // What k8s_cluster emits for a pod: workload attributes as k8s_attributes would leave them.
     await send(clusterPort, "metrics", { resourceMetrics: [{ resource: { attributes: [
       { key: "k8s.pod.name", value: str("web-1") }, { key: "k8s.pod.uid", value: str("uid-1") },
       { key: "k8s.namespace.name", value: str("shop") }, { key: "k8s.node.name", value: str("node-a") },
@@ -412,6 +421,7 @@ test("cluster-state Collector: events become logs, metrics get Kubernetes labels
     expect(self.attributes).toMatchObject({ "k8s.cluster.name": "test-cluster", "k8s.namespace.name": "ezgh-obs", "k8s.pod.name": "agent-cluster-abc" });
     expect(self.attributes["k8s.node.name"]).toBeUndefined();
     if (process.env.DUMP_RECEIVED_CLUSTER) await Bun.write(process.env.DUMP_RECEIVED_CLUSTER, Bun.file(output));
+    await expectNoDeprecations(join(dir, "cluster.log"));
   } catch (error) {
     for (const name of ["cluster", "sink"]) {
       const file = Bun.file(join(dir, `${name}.log`));

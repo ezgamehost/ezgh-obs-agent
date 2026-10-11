@@ -14,7 +14,7 @@ receivers:
         endpoint: "0.0.0.0:4318"
         max_request_body_size: 4194304
   {{- if and .Values.logs.enabled .Values.logs.collectContainerLogs }}
-  filelog:
+  file_log:
     include: ["/var/log/pods/*/*/*.log"]
     exclude:
       - '/var/log/pods/${env:POD_NAMESPACE}_${env:POD_NAME}_*/*/*.log'
@@ -93,7 +93,7 @@ processors:
       - {key: k8s.node.name, value: "${env:NODE_NAME}", action: upsert}
   {{- end }}
   {{- if include "agent.k8sMetadata" . }}
-  k8sattributes:
+  k8s_attributes:
     auth_type: serviceAccount
     # Only this node's pods: each agent watches what it collects, not the whole cluster.
     filter:
@@ -159,31 +159,31 @@ service:
     {{- if .Values.logs.enabled }}
     logs:
       receivers: [otlp]
-      processors: [memory_limiter{{ if include "agent.k8sMetadataOtlp" . }}, k8sattributes{{ end }}, resource/ezgh, transform/application]
+      processors: [memory_limiter{{ if include "agent.k8sMetadataOtlp" . }}, k8s_attributes{{ end }}, resource/ezgh, transform/application]
       exporters: [otlp_http/logs]
     {{- if .Values.logs.collectContainerLogs }}
     logs/node:
-      receivers: [filelog]
-      processors: [memory_limiter{{ if include "agent.k8sMetadata" . }}, k8sattributes{{ end }}, resource/node, resource/ezgh{{ if .Values.logs.parseSeverity }}, transform/severity{{ end }}, transform/application]
+      receivers: [file_log]
+      processors: [memory_limiter{{ if include "agent.k8sMetadata" . }}, k8s_attributes{{ end }}, resource/node, resource/ezgh{{ if .Values.logs.parseSeverity }}, transform/severity{{ end }}, transform/application]
       exporters: [otlp_http/logs]
     {{- end }}
     {{- end }}
     {{- if .Values.metrics.enabled }}
     metrics:
       receivers: [otlp]
-      processors: [memory_limiter{{ if include "agent.k8sMetadataOtlp" . }}, k8sattributes{{ end }}, resource/ezgh, transform/application, transform/k8slabels]
+      processors: [memory_limiter{{ if include "agent.k8sMetadataOtlp" . }}, k8s_attributes{{ end }}, resource/ezgh, transform/application, transform/k8slabels]
       exporters: [otlp_http/metrics]
     {{- if .Values.metrics.collectKubeletMetrics }}
     metrics/node:
       receivers: [kubelet_stats{{ if include "agent.podSpecs" . }}, kubelet_stats/pods{{ end }}]
-      processors: [memory_limiter{{ if include "agent.k8sMetadata" . }}, k8sattributes{{ end }}, resource/node, resource/ezgh, transform/application, transform/k8slabels]
+      processors: [memory_limiter{{ if include "agent.k8sMetadata" . }}, k8s_attributes{{ end }}, resource/node, resource/ezgh, transform/application, transform/k8slabels]
       exporters: [otlp_http/metrics]
     {{- end }}
     {{- end }}
     {{- if .Values.traces.enabled }}
     traces:
       receivers: [otlp]
-      processors: [memory_limiter{{ if include "agent.k8sMetadataOtlp" . }}, k8sattributes{{ end }}, resource/ezgh, transform/application]
+      processors: [memory_limiter{{ if include "agent.k8sMetadataOtlp" . }}, k8s_attributes{{ end }}, resource/ezgh, transform/application]
       exporters: [otlp_http/traces]
     {{- end }}
 {{- end -}}

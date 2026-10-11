@@ -14,7 +14,7 @@ metadata:
   name: {{ include "agent.clusterRoleName" . }}-cluster
   labels:
     {{- include "agent.clusterStateLabels" . | nindent 4 }}
-# Read-only. The objects k8s_cluster watches (and k8sattributes uses to name pods' workloads),
+# Read-only. The objects k8s_cluster watches (and k8s_attributes uses to name pods' workloads),
 # and events. No Secrets, ConfigMaps or persistent volumes.
 rules:
   {{- if .Values.metrics.enabled }}

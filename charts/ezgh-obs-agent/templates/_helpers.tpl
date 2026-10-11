@@ -48,7 +48,7 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | quote }}
     - 'set(attributes["ezgh.metadata.application"], "kubernetes") where attributes["ezgh.metadata.application"] == nil or attributes["ezgh.metadata.application"] == ""'
 {{- end -}}
 
-{{- /* Whether the agent reads pod metadata from the API: some pipeline uses k8sattributes. */ -}}
+{{- /* Whether the agent reads pod metadata from the API: some pipeline uses k8s_attributes. */ -}}
 {{- define "agent.k8sMetadata" -}}
 {{- if and .Values.kubernetesMetadata.enabled (or (and .Values.logs.enabled .Values.logs.collectContainerLogs) (and .Values.metrics.enabled .Values.metrics.collectKubeletMetrics) (include "agent.k8sMetadataOtlp" .)) -}}
 true
@@ -215,14 +215,15 @@ pipeline (once: the pipeline doesn't feed telemetry back), as service.name=ezgh-
 telemetry:
   {{- if .root.Values.metrics.enabled }}
   resource:
-    service.name: ezgh-obs-agent
-    service.instance.id: {{ .instance | quote }}
-    k8s.cluster.name: "${env:CLUSTER_NAME}"
-    k8s.namespace.name: "${env:POD_NAMESPACE}"
-    k8s.pod.name: "${env:POD_NAME}"
-    {{- range $k, $v := .resource }}
-    {{ $k }}: {{ $v | quote }}
-    {{- end }}
+    attributes:
+      - {name: service.name, value: ezgh-obs-agent}
+      - {name: service.instance.id, value: {{ .instance | quote }}}
+      - {name: k8s.cluster.name, value: "${env:CLUSTER_NAME}"}
+      - {name: k8s.namespace.name, value: "${env:POD_NAMESPACE}"}
+      - {name: k8s.pod.name, value: "${env:POD_NAME}"}
+      {{- range $k, $v := .resource }}
+      - {name: {{ $k }}, value: {{ $v | quote }}}
+      {{- end }}
   {{- end }}
   logs:
     level: info

@@ -8,7 +8,7 @@ One Linux DaemonSet pod per eligible node, plus one Deployment pod for cluster s
 and events, using OpenTelemetry Collector Contrib **0.162.0**. No operator, CRDs,
 custom agent binary, or application changes are needed for container logs and
 infrastructure metrics. Application traces require an existing SDK or other
-instrumentation. EZGH's built-in Kubernetes dashboards need 0.3.0.
+instrumentation. EZGH's Kubernetes section needs 0.3.0 or later.
 
 ## Install
 
@@ -28,7 +28,7 @@ kubectl -n ezgh-obs create secret generic ezgh-obs-ingest \
   --from-file=ingest-key=./ingest-key.txt
 
 helm upgrade --install ezgh-obs-agent \
-  oci://ghcr.io/ezgamehost/charts/ezgh-obs-agent --version 0.3.0 \
+  oci://ghcr.io/ezgamehost/charts/ezgh-obs-agent --version 0.3.1 \
   --namespace ezgh-obs \
   --set cluster.name=production-us-west \
   --set ezgh.environment=production \
@@ -41,11 +41,11 @@ Secret through your existing secret manager. The chart never creates a Secret
 or stores a credential in Helm values or release history.
 
 The chart is published as an OCI artifact on GHCR, which is the preferred source
-(`helm pull oci://ghcr.io/ezgamehost/charts/ezgh-obs-agent --version 0.3.0`; Helm
+(`helm pull oci://ghcr.io/ezgamehost/charts/ezgh-obs-agent --version 0.3.1`; Helm
 3.8+ needs no `helm repo add`). The same package is attached to each GitHub
 Release, for networks that can't reach ghcr.io: replace the `oci://…` reference
 and `--version` with
-`https://github.com/ezgamehost/ezgh-obs-agent/releases/download/v0.3.0/ezgh-obs-agent-0.3.0.tgz`
+`https://github.com/ezgamehost/ezgh-obs-agent/releases/download/v0.3.1/ezgh-obs-agent-0.3.1.tgz`
 (checksums in that release's `SHA256SUMS`). To install from source, use
 `./charts/ezgh-obs-agent`.
 See [production values](examples/production.yaml) and [OTLP-only values](examples/otlp-only.yaml).
@@ -74,7 +74,7 @@ the actual node name; incoming application OTLP retains its source node identity
 ### Service names from workloads
 
 Each agent watches the pods on its own node through the Kubernetes API
-(`k8sattributes`, filtered to the node) and adds `k8s.namespace.name`,
+(`k8s_attributes`, filtered to the node) and adds `k8s.namespace.name`,
 `k8s.pod.name`, `k8s.pod.uid` and the pod's owner: `k8s.deployment.name`,
 `k8s.statefulset.name`, `k8s.daemonset.name`, `k8s.cronjob.name` or `k8s.job.name`.
 Telemetry without a `service.name`, or with an SDK's `unknown_service…` default,
@@ -131,8 +131,9 @@ them: as sent, or added by the agent with `otlp.internalTrafficPolicy: Local`; t
 series then split by pod, and `sum by` totals stay the same. Data from agents before
 0.3.0 has no such labels.
 
-If you run your own OpenTelemetry Collector with `k8sattributes` instead of this
-agent, add the same processor to its metrics pipelines, after `k8sattributes`:
+If you run your own OpenTelemetry Collector with `k8s_attributes` (`k8sattributes` before
+Collector Contrib 0.146) instead of this agent, add the same processor to its metrics
+pipelines, after `k8s_attributes`:
 
 ```yaml
 processors:
@@ -376,7 +377,7 @@ bun run lint
 bun run test
 bun run validate
 bun run test:integration
-bun run package                    # dist/ezgh-obs-agent-0.3.0.tgz
+bun run package                    # dist/ezgh-obs-agent-0.3.1.tgz
 ```
 
 Set `COLLECTOR_BIN` to use an existing binary. Offline validation substitutes

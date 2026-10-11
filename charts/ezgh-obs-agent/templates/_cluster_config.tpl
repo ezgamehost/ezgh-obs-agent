@@ -65,7 +65,7 @@ processors:
   {{- if .Values.kubernetesMetadata.enabled }}
   # Pod and container metrics get their workload, as on the nodes, so service.name (PromQL job)
   # names the same workload in kubelet and cluster metrics.
-  k8sattributes:
+  k8s_attributes:
     auth_type: serviceAccount
     wait_for_metadata: true
     wait_for_metadata_timeout: 1m
@@ -127,7 +127,7 @@ service:
     {{- if .Values.metrics.enabled }}
     metrics/cluster:
       receivers: [k8s_cluster]
-      processors: [memory_limiter{{ if .Values.kubernetesMetadata.enabled }}, k8sattributes{{ end }}, resource/ezgh, transform/application, transform/k8slabels]
+      processors: [memory_limiter{{ if .Values.kubernetesMetadata.enabled }}, k8s_attributes{{ end }}, resource/ezgh, transform/application, transform/k8slabels]
       exporters: [otlp_http/metrics]
     metrics/self:
       receivers: [otlp]
