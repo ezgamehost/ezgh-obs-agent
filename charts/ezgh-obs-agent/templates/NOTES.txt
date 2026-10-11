@@ -1,4 +1,7 @@
 EZGH Obs Agent is installed as DaemonSet {{ .Release.Name }} in {{ .Release.Namespace }}.
+{{- if include "agent.clusterState" . }}
+Cluster state and events come from Deployment {{ include "agent.clusterStateName" . }} (one replica).
+{{- end }}
 
 Application OTLP endpoints (enabled signals only):
   HTTP/protobuf: http://{{ .Release.Name }}.{{ .Release.Namespace }}.svc:4318
@@ -6,6 +9,9 @@ Application OTLP endpoints (enabled signals only):
 
 Check node coverage and export errors:
   kubectl -n {{ .Release.Namespace }} get daemonset {{ .Release.Name }}
+  {{- if include "agent.clusterState" . }}
+  kubectl -n {{ .Release.Namespace }} get deployment {{ include "agent.clusterStateName" . }}
+  {{- end }}
   kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/instance={{ .Release.Name }} --tail=50
 
 Readiness confirms process health, not successful ingestion. Confirm new records in the
@@ -13,5 +19,8 @@ Readiness confirms process health, not successful ingestion. Confirm new records
 
 After rotating Secret {{ .Values.auth.existingSecret }}:
   kubectl -n {{ .Release.Namespace }} rollout restart daemonset/{{ .Release.Name }}
+  {{- if include "agent.clusterState" . }}
+  kubectl -n {{ .Release.Namespace }} rollout restart deployment/{{ include "agent.clusterStateName" . }}
+  {{- end }}
 
 Uninstall retains the existing Secret and node-local queue/checkpoint directories.

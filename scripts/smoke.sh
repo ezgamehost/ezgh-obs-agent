@@ -99,6 +99,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata: {name: smoke-web, namespace: default}
 spec:
+  replicas: 1
   selector: {matchLabels: {app: smoke-web}}
   template:
     metadata: {labels: {app: smoke-web}}
@@ -107,15 +108,20 @@ spec:
         - name: web
           image: busybox:1.37.0
           command: [sh, -c, 'while true; do echo ezgh-smoke-deployment-log; sleep 2; done']
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 64Mi}
 EOF
 kubectl apply -f "$scratch/sink.yaml"
 kubectl -n obs-test rollout status deployment/sink --timeout=180s
 helm upgrade --install ezgh-obs-agent charts/ezgh-obs-agent --namespace ezgh-obs \
   -f tests/values.yaml --set ezgh.endpoint=https://sink.obs-test.svc \
   --set metrics.kubelet.insecureSkipVerify=true --set metrics.collectionInterval=5s \
+  --set clusterState.collectionInterval=5s \
   --set 'logs.excludeNamespaces[0]=obs-test' --set otlp.internalTrafficPolicy=Local
 # Trust only the disposable sink CA for this test. Production uses the system CA bundle.
-kubectl -n ezgh-obs patch daemonset ezgh-obs-agent --type=strategic --patch '
+for workload in daemonset/ezgh-obs-agent deployment/ezgh-obs-agent-cluster; do
+kubectl -n ezgh-obs patch "$workload" --type=strategic --patch '
 spec:
   template:
     spec:
@@ -129,9 +135,17 @@ spec:
         - name: test-ca
           configMap: {name: sink-ca}
 '
+done
 kubectl -n ezgh-obs rollout status daemonset/ezgh-obs-agent --timeout=180s
+kubectl -n ezgh-obs rollout status deployment/ezgh-obs-agent-cluster --timeout=180s
 ready=$(kubectl -n ezgh-obs get daemonset ezgh-obs-agent -o jsonpath='{.status.numberReady}')
 [[ "$ready" == 2 ]]
+# Cluster state is watching now: things that make events. Scaling smoke-web (ScalingReplicaSet,
+# Normal) also gives the Deployment two pods; an image that can't be pulled gives Warnings and a
+# container status reason.
+sleep 5
+kubectl -n default scale deployment/smoke-web --replicas=2
+kubectl -n default run smoke-broken --image=registry.invalid/ezgh/missing:0 --restart=Never
 # Push one trace through the in-cluster OTLP Service (logs/metrics come from the nodes).
 kubectl run smoke-trace --namespace obs-test --image=curlimages/curl:8.12.1 --restart=Never --command -- \
   curl --fail --retry 5 --retry-connrefused \
@@ -155,17 +169,22 @@ expected=(
 missing() {
   local m=()
   for pattern in "${expected[@]}"; do grep -qF "$pattern" "$scratch/received.log" || m+=("$pattern"); done
-  printf '%s\n' "${m[@]}"
+  if [[ ${#m[@]} -gt 0 ]]; then printf '%s\n' "${m[@]}"; fi
+  # Structured checks: point vs resource attributes, cluster state, events, self-telemetry.
+  bun scripts/smoke-check.ts "$scratch/received.log"
 }
 # The sink's debug output is large enough for the kubelet to rotate its log during the test, and
 # kubectl logs reads only the current file: keep everything seen so far, appending what's new.
 kubectl -n obs-test logs deployment/sink > "$scratch/received.log"
-for _ in $(seq 1 60); do
+# Self-telemetry is sent every 60 s, so allow a few minutes.
+for _ in $(seq 1 120); do
   kubectl -n obs-test logs deployment/sink --since=10s >> "$scratch/received.log"
   if [[ -z "$(missing)" ]]; then
     kubectl -n ezgh-obs rollout restart daemonset/ezgh-obs-agent
     kubectl -n ezgh-obs rollout status daemonset/ezgh-obs-agent --timeout=180s
-    echo 'PASS: two agents, container logs, kubelet metrics, application traces, workload service names, TLS export, rolling restart'
+    kubectl -n ezgh-obs rollout restart deployment/ezgh-obs-agent-cluster
+    kubectl -n ezgh-obs rollout status deployment/ezgh-obs-agent-cluster --timeout=180s
+    echo 'PASS: two agents, container logs, kubelet metrics, Kubernetes labels, cluster state, events, self-telemetry, application traces, workload service names, TLS export, rolling restart'
     exit 0
   fi
   sleep 2

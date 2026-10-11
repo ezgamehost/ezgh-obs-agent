@@ -47,9 +47,36 @@ metrics:
     # Optional ConfigMap in the release namespace with a custom PEM CA.
     caConfigMap: ""
     caKey: ca.crt
+    # Pod specs from the kubelet's /pods: CPU and memory request/limit utilization, and volume
+    # types and PVC names on volume metrics. Needs get on nodes/pods, which kubelets accept for
+    # /pods from Kubernetes 1.33 (KubeletFineGrainedAuthz). auto: on for 1.33+. Older kubelets
+    # need nodes/proxy, which this chart never grants: there, true fails every kubelet scrape.
+    podSpecs: auto
 
 traces:
   enabled: true
+
+# A one-replica Deployment for what no node sees alone: cluster state metrics (k8s_cluster: pod
+# phase, restarts, readiness, requests and limits, workload replicas, node conditions and
+# allocatable, PVCs) when metrics are enabled, and Kubernetes events as logs (events.k8s.io) when
+# logs are. Its own ServiceAccount reads those objects cluster-wide (get/list/watch); false
+# removes the Deployment and its RBAC.
+clusterState:
+  enabled: true
+  collectionInterval: 30s
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  memoryLimiter:
+    limitMiB: 400
+    spikeLimitMiB: 100
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  priorityClassName: ""
 
 # Pod and workload metadata from the Kubernetes API, for pods on each agent's own node only.
 # A workload without a service.name (or with an SDK's unknown_service default) is named after its

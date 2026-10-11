@@ -1,0 +1,12 @@
+{{- if include "agent.clusterState" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agent.clusterStateName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent.clusterStateLabels" . | nindent 4 }}
+data:
+  collector.yaml: |
+    {{- include "agent.clusterConfig" . | nindent 4 }}
+{{- end }}

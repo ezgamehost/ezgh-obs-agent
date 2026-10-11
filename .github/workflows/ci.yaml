@@ -38,8 +38,8 @@ jobs:
         with: {version: v3.17.3}
       - name: Install kind
         run: |
-          curl -fsSLo kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
-          curl -fsSLo kind.sha256sum https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64.sha256sum
+          curl -fsSLo kind https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64
+          curl -fsSLo kind.sha256sum https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64.sha256sum
           # Upstream checksum file names the release asset, not our local filename.
           expected=$(awk '{print $1}' kind.sha256sum)
           echo "$expected  kind" | sha256sum --check

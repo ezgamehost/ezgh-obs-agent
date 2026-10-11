@@ -1,0 +1,108 @@
+{{- if include "agent.clusterState" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agent.clusterStateName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent.clusterStateLabels" . | nindent 4 }}
+spec:
+  # One replica: two would send every cluster series twice. Recreate keeps it to one during a
+  # rollout, at the cost of a gap of about one collection interval.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "agent.clusterStateSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agent.clusterStateLabels" . | nindent 8 }}
+      annotations:
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        checksum/config: {{ include "agent.clusterConfig" . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "agent.clusterStateName" . }}
+      automountServiceAccountToken: true
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        seccompProfile: {type: RuntimeDefault}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.clusterState.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
+      nodeSelector:
+        {{- toYaml (merge (dict "kubernetes.io/os" "linux") .Values.clusterState.nodeSelector) | nindent 8 }}
+      {{- with .Values.clusterState.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.clusterState.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: collector
+          {{- if .Values.image.digest }}
+          image: {{ printf "%s@%s" .Values.image.repository .Values.image.digest | quote }}
+          {{- else }}
+          image: {{ printf "%s:%s" .Values.image.repository .Values.image.tag | quote }}
+          {{- end }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--config=/etc/otelcol/collector.yaml"]
+          # Unlike the DaemonSet it reads no host files, so it doesn't need root.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          env:
+            - name: EZGH_INGEST_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.existingSecret | quote }}
+                  key: {{ .Values.auth.secretKey | quote }}
+            - {name: EZGH_ENVIRONMENT, value: {{ .Values.ezgh.environment | quote }}}
+            - {name: CLUSTER_NAME, value: {{ .Values.cluster.name | quote }}}
+            - {name: CLUSTER_UID, value: {{ .Values.cluster.uid | quote }}}
+            - name: POD_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - name: POD_NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+          ports:
+            - {name: health, containerPort: 13133, protocol: TCP}
+            - {name: metrics, containerPort: 8888, protocol: TCP}
+          startupProbe:
+            httpGet: {path: /, port: health}
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: {path: /, port: health}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /, port: health}
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.clusterState.resources | nindent 12 }}
+          volumeMounts:
+            - {name: config, mountPath: /etc/otelcol, readOnly: true}
+            - {name: storage, mountPath: /var/lib/ezgh-obs-agent}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "agent.clusterStateName" . }}
+        # Export queues survive a Collector restart, not a new pod; cluster state is re-read anyway.
+        - name: storage
+          emptyDir:
+            sizeLimit: {{ printf "%dMi" (mul .Values.export.storageMaxMiB 3) }}
+{{- end }}

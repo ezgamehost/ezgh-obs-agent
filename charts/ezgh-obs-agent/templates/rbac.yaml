@@ -20,6 +20,12 @@ rules:
     resources: [nodes/stats]
     verbs: [get]
   {{- end }}
+  {{- if include "agent.podSpecs" . }}
+  # The kubelet's /pods (pod specs: requests, limits, volumes), Kubernetes 1.33+. Never nodes/proxy.
+  - apiGroups: [""]
+    resources: [nodes/pods]
+    verbs: [get]
+  {{- end }}
   {{- if include "agent.k8sMetadata" . }}
   # Pod metadata and owners (ReplicaSet → Deployment, Job → CronJob); read-only.
   - apiGroups: [""]

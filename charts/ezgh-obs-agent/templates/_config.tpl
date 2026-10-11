@@ -2,15 +2,7 @@
 extensions:
   health_check:
     endpoint: "0.0.0.0:13133"
-  file_storage:
-    directory: /var/lib/ezgh-obs-agent/data
-    create_directory: true
-    directory_permissions: "0700"
-    fsync: true
-    max_size: {{ mul .Values.export.storageMaxMiB 1048576 }}
-    compaction:
-      on_start: true
-      directory: /var/lib/ezgh-obs-agent/compaction
+  {{- include "agent.fileStorage" . | nindent 2 }}
 
 receivers:
   otlp:
@@ -26,6 +18,10 @@ receivers:
     include: ["/var/log/pods/*/*/*.log"]
     exclude:
       - '/var/log/pods/${env:POD_NAMESPACE}_${env:POD_NAME}_*/*/*.log'
+      {{- if include "agent.clusterState" . }}
+      # The cluster-state Deployment's pods: <deployment>-<replicaset hash>-<suffix>.
+      - {{ printf "/var/log/pods/${env:POD_NAMESPACE}_%s-*_*/*/*.log" (include "agent.clusterStateName" .) | quote }}
+      {{- end }}
       {{- range .Values.logs.excludeNamespaces }}
       - {{ printf "/var/log/pods/%s_*/*/*.log" . | quote }}
       {{- end }}
@@ -54,6 +50,22 @@ receivers:
     {{- end }}
     collection_interval: {{ .Values.metrics.collectionInterval | quote }}
     metric_groups: [node, pod, container, volume]
+    {{- if include "agent.podSpecs" . }}
+    # Pod specs from the kubelet's /pods (nodes/pods): volume types and PVC names on volume metrics.
+    extra_metadata_labels: [k8s.volume.type]
+    {{- end }}
+    metrics:
+      k8s.node.uptime: {enabled: true}
+      k8s.pod.uptime: {enabled: true}
+      k8s.node.filesystem.inode.count: {enabled: true}
+      k8s.node.filesystem.inode.free: {enabled: true}
+      {{- if include "agent.podSpecs" . }}
+      {{- range $kind := list "pod" "container" }}
+      {{- range $m := list "cpu_limit" "cpu_request" "memory_limit" "memory_request" }}
+      k8s.{{ $kind }}.{{ $m }}_utilization: {enabled: true}
+      {{- end }}
+      {{- end }}
+      {{- end }}
   {{- end }}
 
 processors:
@@ -122,49 +134,20 @@ processors:
       {{- include "agent.serviceStatements" . | nindent 6 }}
       {{- include "agent.applicationStatements" . | nindent 6 }}
     {{- end }}
+  {{- if .Values.metrics.enabled }}
+  {{- include "agent.k8sLabelsProcessor" . | nindent 2 }}
+  {{- end }}
 
 exporters:
+  {{- $signals := list }}
   {{- range $signal := list "logs" "metrics" "traces" }}
-  {{- if (index $.Values $signal).enabled }}
-  otlp_http/{{ $signal }}:
-    endpoint: {{ $.Values.ezgh.endpoint | quote }}
-    headers:
-      authorization: "Bearer ${env:EZGH_INGEST_KEY}"
-    compression: gzip
-    timeout: {{ $.Values.export.timeout | quote }}
-    retry_on_failure:
-      enabled: true
-      initial_interval: 1s
-      max_interval: 30s
-      max_elapsed_time: 0s
-    sending_queue:
-      enabled: true
-      storage: file_storage
-      sizer: bytes
-      queue_size: {{ mul $.Values.export.queueSizeMiB 1048576 }}
-      num_consumers: {{ $.Values.export.numConsumers }}
-      # Batch after durable enqueue, with byte limits below EZGH's 5 MiB wire cap.
-      batch:
-        sizer: bytes
-        min_size: 262144
-        max_size: 1048576
-        flush_timeout: 1s
+  {{- if (index $.Values $signal).enabled }}{{ $signals = append $signals $signal }}{{ end }}
   {{- end }}
-  {{- end }}
+  {{- include "agent.exporters" (dict "root" . "signals" $signals) | trim | nindent 2 }}
 
 service:
   extensions: [health_check, file_storage]
-  telemetry:
-    logs:
-      level: info
-      encoding: json
-    metrics:
-      readers:
-        - pull:
-            exporter:
-              prometheus:
-                host: "0.0.0.0"
-                port: 8888
+  {{- include "agent.telemetry" (dict "root" . "instance" "${env:NODE_NAME}" "resource" (dict "k8s.node.name" "${env:NODE_NAME}")) | nindent 2 }}
   pipelines:
     {{- if .Values.logs.enabled }}
     logs:
@@ -181,12 +164,12 @@ service:
     {{- if .Values.metrics.enabled }}
     metrics:
       receivers: [otlp]
-      processors: [memory_limiter{{ if include "agent.k8sMetadataOtlp" . }}, k8sattributes{{ end }}, resource/ezgh, transform/application]
+      processors: [memory_limiter{{ if include "agent.k8sMetadataOtlp" . }}, k8sattributes{{ end }}, resource/ezgh, transform/application, transform/k8slabels]
       exporters: [otlp_http/metrics]
     {{- if .Values.metrics.collectKubeletMetrics }}
     metrics/node:
       receivers: [kubelet_stats]
-      processors: [memory_limiter{{ if include "agent.k8sMetadata" . }}, k8sattributes{{ end }}, resource/node, resource/ezgh, transform/application]
+      processors: [memory_limiter{{ if include "agent.k8sMetadata" . }}, k8sattributes{{ end }}, resource/node, resource/ezgh, transform/application, transform/k8slabels]
       exporters: [otlp_http/metrics]
     {{- end }}
     {{- end }}

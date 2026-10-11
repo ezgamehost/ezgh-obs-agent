@@ -1,0 +1,54 @@
+{{- if include "agent.clusterState" . }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "agent.clusterStateName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent.clusterStateLabels" . | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "agent.clusterRoleName" . }}-cluster
+  labels:
+    {{- include "agent.clusterStateLabels" . | nindent 4 }}
+# Read-only. The objects k8s_cluster watches (and k8sattributes uses to name pods' workloads),
+# and events. No Secrets, ConfigMaps or persistent volumes.
+rules:
+  {{- if .Values.metrics.enabled }}
+  - apiGroups: [""]
+    resources: [namespaces, nodes, persistentvolumeclaims, pods, replicationcontrollers, resourcequotas, services]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [daemonsets, deployments, replicasets, statefulsets]
+    verbs: [get, list, watch]
+  - apiGroups: [batch]
+    resources: [cronjobs, jobs]
+    verbs: [get, list, watch]
+  - apiGroups: [autoscaling]
+    resources: [horizontalpodautoscalers]
+    verbs: [get, list, watch]
+  {{- end }}
+  {{- if .Values.logs.enabled }}
+  - apiGroups: [events.k8s.io]
+    resources: [events]
+    verbs: [get, list, watch]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "agent.clusterRoleName" . }}-cluster
+  labels:
+    {{- include "agent.clusterStateLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "agent.clusterRoleName" . }}-cluster
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "agent.clusterStateName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

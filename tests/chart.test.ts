@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { render } from "./helpers";
 
+// The DaemonSet's ClusterRole (the cluster-state Deployment has its own, suffixed -cluster).
+const agentRole = (documents: any[]) => documents.find((d) => d.kind === "ClusterRole" && !d.metadata.name.endsWith("-cluster"));
+const clusterRole = (documents: any[]) => documents.find((d) => d.kind === "ClusterRole" && d.metadata.name.endsWith("-cluster"));
+
 describe("Helm installation contract", () => {
   test("installs one secured agent per node and exports all signals with a Secret", () => {
     const { documents, config } = render();
@@ -66,9 +70,10 @@ describe("Helm installation contract", () => {
 
   test("pod metadata needs read-only access to pods, ReplicaSets and Jobs", () => {
     const { documents } = render();
-    const rules = documents.find((d) => d.kind === "ClusterRole").rules;
+    const rules = agentRole(documents).rules;
     expect(rules).toEqual([
       { apiGroups: [""], resources: ["nodes/stats"], verbs: ["get"] },
+      { apiGroups: [""], resources: ["nodes/pods"], verbs: ["get"] },
       { apiGroups: [""], resources: ["pods"], verbs: ["get", "list", "watch"] },
       { apiGroups: ["apps"], resources: ["replicasets"], verbs: ["get", "list", "watch"] },
       { apiGroups: ["batch"], resources: ["jobs"], verbs: ["get", "list", "watch"] },
@@ -83,7 +88,7 @@ describe("Helm installation contract", () => {
     expect(config.processors.k8sattributes.pod_association.at(-1)).toEqual({ sources: [{ from: "connection" }] });
     expect(documents.find((d) => d.kind === "Service").spec.internalTrafficPolicy).toBe("Local");
     const tracesOnly = render(["--set", "logs.enabled=false,metrics.enabled=false,otlp.internalTrafficPolicy=Local"]);
-    expect(tracesOnly.documents.find((d) => d.kind === "ClusterRole").rules.map((r) => r.resources[0]))
+    expect(agentRole(tracesOnly.documents).rules.map((r) => r.resources[0]))
       .toEqual(["pods", "replicasets", "jobs"]);
     expect(tracesOnly.documents.find((d) => d.kind === "DaemonSet").spec.template.spec.automountServiceAccountToken).toBe(true);
   });
@@ -92,11 +97,13 @@ describe("Helm installation contract", () => {
     const { documents, config } = render(["--set", "kubernetesMetadata.enabled=false,otlp.internalTrafficPolicy=Local"]);
     expect(config.processors.k8sattributes).toBeUndefined();
     for (const pipeline of Object.values(config.service.pipelines) as any) expect(pipeline.processors).not.toContain("k8sattributes");
-    expect(documents.find((d) => d.kind === "ClusterRole").rules).toEqual([{ apiGroups: [""], resources: ["nodes/stats"], verbs: ["get"] }]);
+    expect(agentRole(documents).rules.map((r) => r.resources[0])).toEqual(["nodes/stats", "nodes/pods"]);
   });
 
   test("traces-only mode removes log access and kubelet privileges", () => {
-    const { documents, config } = render(["--set", "logs.enabled=false,metrics.enabled=false"]);
+    const { documents, config, clusterConfig } = render(["--set", "logs.enabled=false,metrics.enabled=false"]);
+    expect(clusterConfig).toBeUndefined();
+    expect(documents.some((d) => d.kind === "Deployment")).toBe(false);
     expect(Object.keys(config.service.pipelines)).toEqual(["traces"]);
     expect(Object.keys(config.receivers)).toEqual(["otlp"]);
     expect(documents.some((d) => d.kind === "ClusterRole")).toBe(false);
@@ -108,8 +115,8 @@ describe("Helm installation contract", () => {
   test("release and namespace isolate RBAC and persisted state", () => {
     const a = render([], "agent", "one");
     const b = render([], "agent", "two");
-    expect(a.documents.find((d) => d.kind === "ClusterRole").metadata.name)
-      .not.toBe(b.documents.find((d) => d.kind === "ClusterRole").metadata.name);
+    expect(agentRole(a.documents).metadata.name).not.toBe(agentRole(b.documents).metadata.name);
+    expect(clusterRole(a.documents).metadata.name).not.toBe(clusterRole(b.documents).metadata.name);
     const storage = (r) => r.documents.find((d) => d.kind === "DaemonSet").spec.template.spec.volumes
       .find((v) => v.name === "storage").hostPath.path;
     expect(storage(a)).not.toBe(storage(b));
@@ -119,6 +126,147 @@ describe("Helm installation contract", () => {
     const { config } = render(["--set", "logs.excludeNamespaces[0]=private"]);
     expect(config.receivers.filelog.exclude).toContain("/var/log/pods/private_*/*/*.log");
     expect(config.receivers.filelog.exclude).toContain("/var/log/pods/${env:POD_NAMESPACE}_${env:POD_NAME}_*/*/*.log");
+    // The cluster-state Deployment's pods are the agent's too.
+    expect(config.receivers.filelog.exclude).toContain("/var/log/pods/${env:POD_NAMESPACE}_ezgh-obs-agent-cluster-*_*/*/*.log");
+    expect(render(["--set", "clusterState.enabled=false"]).config.receivers.filelog.exclude)
+      .not.toContain("/var/log/pods/${env:POD_NAMESPACE}_ezgh-obs-agent-cluster-*_*/*/*.log");
+  });
+
+  const metricPipelines = (config: any) => Object.entries(config.service.pipelines).filter(([name]) => name.startsWith("metrics"));
+
+  test("every metrics pipeline copies the Kubernetes resource attributes onto datapoints, last", () => {
+    for (const config of Object.values(render()).slice(1) as any[]) {
+      expect(metricPipelines(config).length).toBeGreaterThan(0);
+      for (const [, pipeline] of metricPipelines(config) as any) expect(pipeline.processors.at(-1)).toBe("transform/k8slabels");
+      const [group] = config.processors["transform/k8slabels"].metric_statements;
+      expect(group.context).toBe("datapoint");
+      const keys = ["cluster", "namespace", "node", "pod", "container", "deployment", "statefulset", "daemonset",
+        "replicaset", "job", "cronjob", "hpa", "persistentvolumeclaim", "volume"].map((k) => `k8s.${k}.name`).concat("k8s.volume.type");
+      for (const key of keys) {
+        expect(group.statements).toContain(`set(attributes["${key}"], resource.attributes["${key}"]) where resource.attributes["${key}"] != nil and attributes["${key}"] == nil`);
+      }
+    }
+    // Logs and traces keep their resource attributes as they are.
+    const { config } = render();
+    for (const [name, pipeline] of Object.entries(config.service.pipelines) as any) {
+      if (!name.startsWith("metrics")) expect(pipeline.processors).not.toContain("transform/k8slabels");
+    }
+    expect(render(["--set", "metrics.enabled=false"]).config.processors["transform/k8slabels"]).toBeUndefined();
+  });
+
+  test("kubelet_stats adds uptime, inode and (1.33+) request/limit utilization metrics", () => {
+    const kubelet = render().config.receivers.kubelet_stats;
+    expect(Object.keys(kubelet.metrics)).toEqual(["k8s.node.uptime", "k8s.pod.uptime", "k8s.node.filesystem.inode.count",
+      "k8s.node.filesystem.inode.free", ...["pod", "container"].flatMap((k) =>
+        ["cpu_limit", "cpu_request", "memory_limit", "memory_request"].map((m) => `k8s.${k}.${m}_utilization`))]);
+    expect(kubelet.extra_metadata_labels).toEqual(["k8s.volume.type"]);
+    // Before 1.33 the kubelet authorizes /pods only with nodes/proxy, which the chart never grants.
+    for (const args of [["--kube-version", "1.32.2"], ["--set", "metrics.kubelet.podSpecs=false"]]) {
+      const { documents, config } = render(args);
+      expect(Object.keys(config.receivers.kubelet_stats.metrics)).toHaveLength(4);
+      expect(config.receivers.kubelet_stats.extra_metadata_labels).toBeUndefined();
+      expect(agentRole(documents).rules.map((r) => r.resources[0])).not.toContain("nodes/pods");
+    }
+    const forced = render(["--set", "metrics.kubelet.podSpecs=true", "--kube-version", "1.32.2"]);
+    expect(agentRole(forced.documents).rules.map((r) => r.resources[0])).toContain("nodes/pods");
+    for (const { documents } of [render(), forced]) {
+      expect(documents.flatMap((d) => d.kind === "ClusterRole" ? d.rules.flatMap((r) => r.resources) : [])).not.toContain("nodes/proxy");
+    }
+  });
+
+  test("each agent sends its own metrics to its own OTLP receiver every 60 s", () => {
+    const { config, clusterConfig } = render();
+    for (const [c, instance] of [[config, "${env:NODE_NAME}"], [clusterConfig, "cluster-state"]] as const) {
+      const telemetry = c.service.telemetry;
+      expect(telemetry.resource["service.name"]).toBe("ezgh-obs-agent");
+      expect(telemetry.resource["service.instance.id"]).toBe(instance);
+      expect(telemetry.resource["k8s.cluster.name"]).toBe("${env:CLUSTER_NAME}");
+      expect(telemetry.metrics.readers[0].pull.exporter.prometheus.port).toBe(8888);
+      expect(telemetry.metrics.readers[1].periodic).toMatchObject({ interval: 60000,
+        exporter: { otlp: { protocol: "http/protobuf", endpoint: "http://127.0.0.1:4318/v1/metrics" } } });
+    }
+    expect(config.service.telemetry.resource["k8s.node.name"]).toBe("${env:NODE_NAME}");
+    // The Deployment's receiver takes only its own telemetry.
+    expect(clusterConfig.receivers.otlp.protocols).toEqual({ http: { endpoint: "127.0.0.1:4318" } });
+    expect(clusterConfig.service.pipelines["metrics/self"].receivers).toEqual(["otlp"]);
+    // Without a metrics pipeline there is nowhere to send it.
+    const noMetrics = render(["--set", "metrics.enabled=false"]);
+    for (const c of [noMetrics.config, noMetrics.clusterConfig]) {
+      expect(c.service.telemetry.resource).toBeUndefined();
+      expect(c.service.telemetry.metrics.readers).toHaveLength(1);
+    }
+  });
+
+  test("cluster state: one Recreate replica with its own read-only RBAC, cluster metrics and events", () => {
+    const { documents, clusterConfig } = render();
+    const deployment = documents.find((d) => d.kind === "Deployment");
+    expect(deployment.metadata.name).toBe("ezgh-obs-agent-cluster");
+    expect(deployment.spec.replicas).toBe(1);
+    expect(deployment.spec.strategy).toEqual({ type: "Recreate" });
+    // Its pods match neither the DaemonSet's selector nor the OTLP Service's.
+    const ds = documents.find((d) => d.kind === "DaemonSet");
+    const podLabels = deployment.spec.template.metadata.labels;
+    expect(Object.entries(ds.spec.selector.matchLabels).every(([k, v]) => podLabels[k] === v)).toBe(false);
+    expect(Object.entries(documents.find((d) => d.kind === "Service").spec.selector).every(([k, v]) => podLabels[k] === v)).toBe(false);
+    const pod = deployment.spec.template.spec;
+    expect(pod.serviceAccountName).toBe("ezgh-obs-agent-cluster");
+    expect(pod.nodeSelector).toEqual({ "kubernetes.io/os": "linux" });
+    const [agent] = pod.containers;
+    expect(agent.image).toBe(ds.spec.template.spec.containers[0].image);
+    expect(agent.env.find((e) => e.name === "EZGH_INGEST_KEY").valueFrom.secretKeyRef).toEqual({ name: "test-ingest", key: "ingest-key" });
+    expect(agent.securityContext).toMatchObject({ runAsNonRoot: true, allowPrivilegeEscalation: false,
+      readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } });
+    expect(pod.volumes.find((v) => v.name === "storage").emptyDir).toBeDefined();
+    expect(pod.volumes.some((v) => v.hostPath)).toBe(false);
+    const binding = documents.find((d) => d.kind === "ClusterRoleBinding" && d.metadata.name.endsWith("-cluster"));
+    expect(binding.subjects).toEqual([{ kind: "ServiceAccount", name: "ezgh-obs-agent-cluster", namespace: "ezgh-obs" }]);
+    expect(binding.roleRef.name).toBe(clusterRole(documents).metadata.name);
+    const rules = clusterRole(documents).rules;
+    expect(rules.every((r) => r.verbs.join() === "get,list,watch")).toBe(true);
+    expect(rules.flatMap((r) => r.resources)).toEqual(["namespaces", "nodes", "persistentvolumeclaims", "pods",
+      "replicationcontrollers", "resourcequotas", "services", "daemonsets", "deployments", "replicasets", "statefulsets",
+      "cronjobs", "jobs", "horizontalpodautoscalers", "events"]);
+    expect(rules.find((r) => r.resources.includes("events")).apiGroups).toEqual(["events.k8s.io"]);
+    expect(rules.flatMap((r) => r.resources)).not.toContain("secrets");
+
+    const cluster = clusterConfig.receivers.k8s_cluster;
+    expect(cluster.collection_interval).toBe("30s");
+    expect(cluster.allocatable_types_to_report).toEqual(["cpu", "memory", "pods"]);
+    expect(cluster.node_conditions_to_report).toEqual(["Ready", "MemoryPressure", "DiskPressure", "PIDPressure"]);
+    expect(Object.keys(cluster.metrics)).toEqual(["k8s.node.condition", "k8s.pod.status_reason", "k8s.container.status.reason",
+      "k8s.persistentvolumeclaim.status.phase", "k8s.persistentvolumeclaim.storage.capacity", "k8s.persistentvolumeclaim.storage.request"]);
+    expect(clusterConfig.service.pipelines["metrics/cluster"].processors)
+      .toEqual(["memory_limiter", "k8sattributes", "resource/ezgh", "transform/application", "transform/k8slabels"]);
+    expect(clusterConfig.processors.k8sattributes.filter).toBeUndefined();
+    expect(clusterConfig.service.pipelines["logs/events"]).toEqual({ receivers: ["k8s_objects"],
+      processors: ["memory_limiter", "resource/ezgh", "transform/events", "transform/application"], exporters: ["otlp_http/logs"] });
+    expect(Object.keys(clusterConfig.exporters)).toEqual(["otlp_http/logs", "otlp_http/metrics"]);
+  });
+
+  test("cluster state follows the signals and turns off completely", () => {
+    const metricsOnly = render(["--set", "logs.enabled=false"]);
+    expect(metricsOnly.clusterConfig.receivers.k8s_objects).toBeUndefined();
+    expect(clusterRole(metricsOnly.documents).rules.flatMap((r) => r.resources)).not.toContain("events");
+    const logsOnly = render(["--set", "metrics.enabled=false"]);
+    expect(Object.keys(logsOnly.clusterConfig.receivers)).toEqual(["k8s_objects"]);
+    expect(clusterRole(logsOnly.documents).rules).toEqual([{ apiGroups: ["events.k8s.io"], resources: ["events"], verbs: ["get", "list", "watch"] }]);
+    const off = render(["--set", "clusterState.enabled=false"]);
+    expect(off.clusterConfig).toBeUndefined();
+    for (const kind of ["Deployment", "ServiceAccount", "ClusterRole", "ClusterRoleBinding", "ConfigMap"]) {
+      expect(off.documents.filter((d) => d.kind === kind).every((d) => !d.metadata.name.endsWith("-cluster"))).toBe(true);
+    }
+    expect(off.documents.filter((d) => d.kind === "ClusterRole")).toHaveLength(1);
+  });
+
+  test("cluster state scheduling and resources are its own", () => {
+    const { documents, clusterConfig } = render(["--set", "clusterState.nodeSelector.pool=system,clusterState.priorityClassName=high,clusterState.resources.limits.memory=1Gi,clusterState.memoryLimiter.limitMiB=800,clusterState.tolerations[0].operator=Exists"]);
+    const pod = documents.find((d) => d.kind === "Deployment").spec.template.spec;
+    expect(pod.nodeSelector).toEqual({ "kubernetes.io/os": "linux", pool: "system" });
+    expect(pod.priorityClassName).toBe("high");
+    expect(pod.tolerations).toEqual([{ operator: "Exists" }]);
+    expect(pod.containers[0].resources.limits.memory).toBe("1Gi");
+    expect(clusterConfig.processors.memory_limiter.limit_mib).toBe(800);
+    expect(documents.find((d) => d.kind === "DaemonSet").spec.template.spec.nodeSelector).toEqual({ "kubernetes.io/os": "linux" });
   });
 
   test.each([
@@ -129,6 +277,10 @@ describe("Helm installation contract", () => {
     ["logs.enabled=false,metrics.enabled=false,traces.enabled=false"],
     ["export.queueSizeMiB=0"],
     ["otlp.internalTrafficPolicy=Nearest"],
+    ["metrics.kubelet.podSpecs=maybe"],
+    ["clusterState.collectionInterval=often"],
+    ["clusterState.memoryLimiter.spikeLimitMiB=400"],
+    ["clusterState.nodeSelector.kubernetes\\.io/os=windows"],
   ])("rejects invalid configuration: %s", (value) => {
     expect(() => render(["--set", value])).toThrow();
   });

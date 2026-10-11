@@ -13,28 +13,38 @@ const cases: string[][] = [
   ["--set", "metrics.kubelet.caConfigMap=kubelet-ca,cluster.uid=stable-uid"],
   ["--set", "otlp.internalTrafficPolicy=Local"],
   ["--set", "kubernetesMetadata.enabled=false,logs.parseSeverity=false"],
+  ["--set", "clusterState.enabled=false"],
+  ["--set", "metrics.kubelet.podSpecs=false"],
+  ["--kube-version", "1.32.2"],
+  ["--set", "metrics.kubelet.podSpecs=true", "--kube-version", "1.32.2"],
+  ["--set", "logs.enabled=false"],
+  ["--set", "metrics.enabled=false"],
 ];
 const dir = mkdtempSync(join(tmpdir(), "ezgh-collector-validate-"));
 try {
   for (const [index, args] of cases.entries()) {
-    const { config } = render(args);
+    const { config, clusterConfig } = render(args);
     // Validation constructs the kubelet client. The offline test has no projected
     // ServiceAccount token/CA; cluster smoke tests exercise real authentication.
     if (config.receivers.kubelet_stats) {
       config.receivers.kubelet_stats.auth_type = "none";
       config.receivers.kubelet_stats.ca_file = process.env.TEST_CA_FILE ?? "/etc/ssl/cert.pem";
     }
-    const path = join(dir, `${index}.yaml`);
-    await Bun.write(path, Bun.YAML.stringify(config));
-    const result = Bun.spawnSync([binary, "validate", `--config=${path}`], {
-      env: { ...process.env, NODE_IP: "127.0.0.1", NODE_NAME: "node", POD_NAME: "agent",
-        POD_NAMESPACE: "ezgh-obs", CLUSTER_NAME: "test-cluster", CLUSTER_UID: "stable-uid",
-        EZGH_ENVIRONMENT: "test", EZGH_INGEST_KEY: "test-placeholder-not-a-credential" },
-    });
-    if (result.exitCode !== 0) {
-      throw new Error(`Collector config ${index} rejected:\n${result.stderr}\n${result.stdout}`);
+    const variants: [string, any][] = [["agent", config]];
+    if (clusterConfig) variants.push(["cluster-state", clusterConfig]);
+    for (const [name, collectorConfig] of variants) {
+      const path = join(dir, `${index}-${name}.yaml`);
+      await Bun.write(path, Bun.YAML.stringify(collectorConfig));
+      const result = Bun.spawnSync([binary, "validate", `--config=${path}`], {
+        env: { ...process.env, NODE_IP: "127.0.0.1", NODE_NAME: "node", POD_NAME: "agent",
+          POD_NAMESPACE: "ezgh-obs", CLUSTER_NAME: "test-cluster", CLUSTER_UID: "stable-uid",
+          EZGH_ENVIRONMENT: "test", EZGH_INGEST_KEY: "test-placeholder-not-a-credential" },
+      });
+      if (result.exitCode !== 0) {
+        throw new Error(`Collector config ${index} (${name}, ${args.join(" ")}) rejected:\n${result.stderr}\n${result.stdout}`);
+      }
     }
-    console.log(`Collector config ${index + 1}/${cases.length} valid`);
+    console.log(`Collector config ${index + 1}/${cases.length} valid (${variants.map(([n]) => n).join(", ")})`);
   }
 } finally {
   rmSync(dir, { recursive: true, force: true });
