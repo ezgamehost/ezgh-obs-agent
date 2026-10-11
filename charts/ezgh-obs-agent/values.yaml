@@ -50,7 +50,8 @@ metrics:
     # Pod specs from the kubelet's /pods: CPU and memory request/limit utilization, and volume
     # types and PVC names on volume metrics. Needs get on nodes/pods, which kubelets accept for
     # /pods from Kubernetes 1.33 (KubeletFineGrainedAuthz). auto: on for 1.33+. Older kubelets
-    # need nodes/proxy, which this chart never grants: there, true fails every kubelet scrape.
+    # need nodes/proxy, which this chart never grants. It's a second kubelet receiver, so a kubelet
+    # refusing /pods (e.g. a node pool behind its control plane) loses only these and volume metrics.
     podSpecs: auto
 
 traces:

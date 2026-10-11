@@ -51,8 +51,11 @@ Since 0.3.0 (for EZGH's built-in Kubernetes dashboards, service-template
   every series; leader election is a later option.
 - **Pod specs from the kubelet.** Request/limit utilization and volume types read `/pods`, which
   kubelets authorize with `nodes/pods` from 1.33 (KubeletFineGrainedAuthz) and otherwise only with
-  `nodes/proxy`, which allows exec into pods and is never granted. A failed `/pods` read fails the
-  whole scrape, so `podSpecs: auto` turns it on only where Helm reports 1.33+.
+  `nodes/proxy`, which allows exec into pods and is never granted. `podSpecs: auto` turns it on
+  where Helm reports a 1.33+ API server. A failed `/pods` read fails the whole scrape, and kubelets
+  may lag the control plane, so these metrics (with the volume group, which needs the specs for
+  volume types) run in a second `kubelet_stats/pods` receiver: a lagging node loses only those.
+  The cost is a second `/stats/summary` read per node per interval.
 - **Self-telemetry.** A second periodic reader sends each Collector's metrics every 60 s to its
   own OTLP receiver (`service.name=ezgh-obs-agent`, instance = node or `cluster-state`), through
   the normal metrics pipeline once. The Prometheus pull endpoint on 8888 stays. The final flush at

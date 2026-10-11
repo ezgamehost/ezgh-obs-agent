@@ -95,7 +95,12 @@ test("real Collector forwards all signals, parses CRI, and replays durable queue
         // Pod specs, for request/limit utilization and volume types (podSpecs).
         if (new URL(request.url).pathname === "/pods") {
           podsRequests++;
-          return Response.json({ kind: "PodList", apiVersion: "v1", items: [] });
+          return Response.json({ kind: "PodList", apiVersion: "v1", items: [{
+            metadata: { name: "web-1", namespace: "shop", uid: "uid-web-1" },
+            spec: { containers: [{ name: "web", resources: { requests: { cpu: "100m", memory: "16Mi" }, limits: { cpu: "1", memory: "64Mi" } } }],
+              volumes: [{ name: "data", persistentVolumeClaim: { claimName: "data-web-1" } }] },
+            status: { containerStatuses: [{ name: "web", containerID: "containerd://abc" }] },
+          }] });
         }
         if (new URL(request.url).pathname !== "/stats/summary") return new Response(null, { status: 404 });
         kubeletRequests++;
@@ -103,17 +108,27 @@ test("real Collector forwards all signals, parses CRI, and replays durable queue
         return Response.json({ node: { nodeName: "collector-node", startTime: time,
           cpu: { time, usageCoreNanoSeconds: 1000000, usageNanoCores: 1000 },
           memory: { time, usageBytes: 2048, workingSetBytes: 1024, availableBytes: 1048576 },
-        }, pods: [] });
+        }, pods: [{ podRef: { name: "web-1", namespace: "shop", uid: "uid-web-1" }, startTime: time,
+          cpu: { time, usageCoreNanoSeconds: 1000000, usageNanoCores: 1000 },
+          memory: { time, usageBytes: 4096, workingSetBytes: 2048, rssBytes: 1024 },
+          containers: [{ name: "web", startTime: time, cpu: { time, usageCoreNanoSeconds: 1000000, usageNanoCores: 1000 },
+            memory: { time, usageBytes: 4096, workingSetBytes: 2048, rssBytes: 1024 } }],
+          volume: [{ name: "data", time, availableBytes: 900, capacityBytes: 1000, usedBytes: 100,
+            inodesFree: 90, inodes: 100, inodesUsed: 10, pvcRef: { name: "data-web-1", namespace: "shop" } }],
+        }] });
       },
     });
     const { config } = render(["--set", "metrics.collectionInterval=1s"]);
     // Keep the chart's URL shape and NODE_IP expansion; only substitute fixture port/auth.
-    config.receivers.kubelet_stats.endpoint = config.receivers.kubelet_stats.endpoint.replace(":10250", `:${kubelet.port}`);
-    config.receivers.kubelet_stats.auth_type = "tls";
-    config.receivers.kubelet_stats.cert_file = cert;
-    config.receivers.kubelet_stats.key_file = key;
-    config.receivers.kubelet_stats.insecure_skip_verify = true;
-    config.receivers.kubelet_stats.ca_file = cert;
+    expect(Object.keys(config.receivers).filter((r) => r.startsWith("kubelet_stats"))).toEqual(["kubelet_stats", "kubelet_stats/pods"]);
+    for (const receiver of [config.receivers.kubelet_stats, config.receivers["kubelet_stats/pods"]]) {
+      receiver.endpoint = receiver.endpoint.replace(":10250", `:${kubelet.port}`);
+      receiver.auth_type = "tls";
+      receiver.cert_file = cert;
+      receiver.key_file = key;
+      receiver.insecure_skip_verify = true;
+      receiver.ca_file = cert;
+    }
     // No Kubernetes API here: the kind smoke test covers pod metadata; this one checks the naming
     // rule on attributes as k8sattributes would leave them.
     delete config.processors.k8sattributes;
@@ -202,7 +217,7 @@ test("real Collector forwards all signals, parses CRI, and replays durable queue
     }
     await eventually(async () => {
       const text = JSON.stringify(await records());
-      for (const marker of ["otlp-marker", "deployment-marker", "named-marker", "cri-marker", "klog-marker", "json-without-level-marker", "smoke.gauge", "smoke-span", "k8s.node.cpu", "k8s.node.uptime", "otelcol_process_uptime"]) expect(text).toContain(marker);
+      for (const marker of ["otlp-marker", "deployment-marker", "named-marker", "cri-marker", "klog-marker", "json-without-level-marker", "smoke.gauge", "smoke-span", "k8s.node.cpu", "k8s.node.uptime", "k8s.container.memory_limit_utilization", "k8s.volume.capacity", "otelcol_scraper_scraped_metric_points"]) expect(text).toContain(marker);
       expect(kubeletRequests).toBeGreaterThan(0);
       expect(podsRequests).toBeGreaterThan(0);
     });
@@ -229,6 +244,10 @@ test("real Collector forwards all signals, parses CRI, and replays durable queue
         expect(attrs["k8s.node.name"]).toBe("collector-node");
         expect(attrs["k8s.namespace.name"]).toBe("default");
         expect(attrs["k8s.container.name"]).toBe("app");
+      } else if (attrs["k8s.pod.name"] === "web-1") {
+        // The fixture kubelet's pod: its container's metrics are named after the container.
+        expect(attrs["k8s.node.name"]).toBe("collector-node");
+        expect(attrs["ezgh.metadata.application"]).toBe(attrs["k8s.container.name"] ? "web" : "kubernetes");
       } else {
         expect(attrs["k8s.node.name"]).toBe("collector-node");
         expect(attrs["ezgh.metadata.application"]).toBe("kubernetes");
@@ -242,6 +261,15 @@ test("real Collector forwards all signals, parses CRI, and replays durable queue
       expect(p.attributes["k8s.node.name"]).toBe("collector-node");
       expect(p.attributes["k8s.cluster.name"]).toBe("test-cluster");
     }
+    // Pod specs (kubelet_stats/pods): request/limit utilization, and volume types and PVC names.
+    const limit = points.find((p) => p.name === "k8s.container.memory_limit_utilization")!;
+    expect(limit.attributes).toMatchObject({ "k8s.pod.name": "web-1", "k8s.container.name": "web", "k8s.namespace.name": "shop" });
+    const volume = points.find((p) => p.name === "k8s.volume.capacity")!;
+    expect(volume.attributes).toMatchObject({ "k8s.volume.name": "data", "k8s.volume.type": "persistentVolumeClaim",
+      "k8s.persistentvolumeclaim.name": "data-web-1", "k8s.pod.name": "web-1", "k8s.node.name": "collector-node" });
+    // Each pod metric comes from one receiver only.
+    const scraped = points.filter((p) => p.name === "otelcol_scraper_scraped_metric_points");
+    expect(new Set(scraped.map((p) => p.attributes.receiver))).toEqual(new Set(["kubelet_stats", "kubelet_stats/pods"]));
     // Application OTLP: the resource's node (as sent) and the cluster; an attribute the
     // datapoint already had is kept.
     const app = points.find((p) => p.name === "smoke.gauge")!;

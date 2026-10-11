@@ -292,16 +292,19 @@ Request/limit utilization and volume types read pod specs from the kubelet's `/p
 From Kubernetes 1.33 kubelets authorize that with `nodes/pods` (KubeletFineGrainedAuthz,
 beta and on by default); older ones only with `nodes/proxy`, which also allows running
 commands in pods, so the chart never grants it. `metrics.kubelet.podSpecs: auto` turns
-this on from 1.33, judged by the version Helm reports. A failed `/pods` read fails the
-whole kubelet scrape, so set `false` on a 1.33+ cluster whose kubelets have the gate off,
-and `true` on an older one only if its kubelets have the gate on.
+this on when Helm reports a 1.33+ API server. It runs as a second kubelet receiver
+(`kubelet_stats/pods`, with the volume metrics), so a kubelet that refuses `/pods`, such
+as a node pool still behind its upgraded control plane, loses only utilization and
+volume metrics (and logs a `403` every interval), never its node, pod and container
+metrics. Set `false` if your kubelets have the gate off, and `true` on an older cluster
+only if they have it on.
 
 The cluster-state Deployment's own ServiceAccount has cluster-wide `get`, `list` and
 `watch` on namespaces, nodes, pods, services, resource quotas, replication controllers,
 PersistentVolumeClaims, Deployments, StatefulSets, DaemonSets, ReplicaSets, Jobs,
 CronJobs and HorizontalPodAutoscalers (when metrics are enabled), and on
-`events.k8s.io` Events (when logs are). The DaemonSet's RBAC doesn't grow. Neither can
-read Secrets or ConfigMaps through the API.
+`events.k8s.io` Events (when logs are). The DaemonSet gains only `nodes/pods` (1.33+).
+Neither can read Secrets or ConfigMaps through the API.
 
 File offsets and three independent export queues use persistent node storage with
 fsync. Telemetry is enqueued before exporter batching. Batches are bounded to
@@ -339,7 +342,7 @@ Inspect exporter queue size, enqueue/send failures and receiver refusals.
 | Export `401`/`403` | Key validity and all enabled signal permissions. These failures are not a durable holding mechanism; fix and restart after key rotation. |
 | Export `429`/`503` | Backend throttling/outage; inspect queue and disk capacity. |
 | Missing node data | DaemonSet coverage, taints, node selectors, log exclusions and network access to kubelet 10250. |
-| Kubelet `/pods` `403`, no kubelet metrics | The kubelets don't accept `nodes/pods` (before 1.33, or KubeletFineGrainedAuthz off): set `metrics.kubelet.podSpecs: false`. |
+| Kubelet `/pods` `403`, no utilization or volume metrics | The kubelets don't accept `nodes/pods` (before 1.33, or KubeletFineGrainedAuthz off). Upgrade the node pool, or set `metrics.kubelet.podSpecs: false` to get volume metrics without types. |
 | No cluster state or events | The `-cluster` Deployment is running and its ClusterRole binding exists; `clusterState.enabled`. |
 
 After replacing the Secret token, restart the DaemonSet because the token is read
@@ -352,7 +355,9 @@ kubectl -n ezgh-obs rollout status deployment/ezgh-obs-agent-cluster
 ```
 
 Use the same `helm upgrade --install` command with an explicit new chart version
-for upgrades. Configuration changes roll pods automatically; updates use zero
+for upgrades. With Helm 3, don't upgrade from 0.2.x with `--reuse-values` alone: it keeps
+the old chart's defaults, which lack 0.3.0's new settings, and the values schema rejects
+the upgrade. Pass your settings again, or use `--reset-then-reuse-values`. Configuration changes roll pods automatically; updates use zero
 surge to avoid simultaneous readers of the same host files/state.
 
 `helm uninstall ezgh-obs-agent -n ezgh-obs` leaves the externally managed Secret

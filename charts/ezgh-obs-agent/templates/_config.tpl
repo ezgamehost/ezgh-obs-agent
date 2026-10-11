@@ -19,8 +19,9 @@ receivers:
     exclude:
       - '/var/log/pods/${env:POD_NAMESPACE}_${env:POD_NAME}_*/*/*.log'
       {{- if include "agent.clusterState" . }}
-      # The cluster-state Deployment's pods: <deployment>-<replicaset hash>-<suffix>.
-      - {{ printf "/var/log/pods/${env:POD_NAMESPACE}_%s-*_*/*/*.log" (include "agent.clusterStateName" .) | quote }}
+      # The cluster-state Deployment's pods: <deployment>-<replicaset hash>-<suffix>, with the
+      # generated prefix cut to 58 characters.
+      - {{ printf "/var/log/pods/${env:POD_NAMESPACE}_%s*_*/*/*.log" (printf "%s-" (include "agent.clusterStateName" .) | trunc 58) | quote }}
       {{- end }}
       {{- range .Values.logs.excludeNamespaces }}
       - {{ printf "/var/log/pods/%s_*/*/*.log" . | quote }}
@@ -42,30 +43,36 @@ receivers:
   {{- end }}
   {{- if and .Values.metrics.enabled .Values.metrics.collectKubeletMetrics }}
   kubelet_stats:
-    auth_type: serviceAccount
-    endpoint: {{ .Values.metrics.kubelet.endpoint | quote }}
-    insecure_skip_verify: {{ .Values.metrics.kubelet.insecureSkipVerify }}
-    {{- if .Values.metrics.kubelet.caConfigMap }}
-    ca_file: /etc/kubelet-ca/ca.crt
-    {{- end }}
-    collection_interval: {{ .Values.metrics.collectionInterval | quote }}
-    metric_groups: [node, pod, container, volume]
-    {{- if include "agent.podSpecs" . }}
-    # Pod specs from the kubelet's /pods (nodes/pods): volume types and PVC names on volume metrics.
-    extra_metadata_labels: [k8s.volume.type]
-    {{- end }}
+    {{- include "agent.kubeletClient" . | nindent 4 }}
+    metric_groups: [node, pod, container{{ if not (include "agent.podSpecs" .) }}, volume{{ end }}]
     metrics:
       k8s.node.uptime: {enabled: true}
       k8s.pod.uptime: {enabled: true}
       k8s.node.filesystem.inode.count: {enabled: true}
       k8s.node.filesystem.inode.free: {enabled: true}
-      {{- if include "agent.podSpecs" . }}
+  {{- if include "agent.podSpecs" . }}
+  # What needs pod specs from the kubelet's /pods (nodes/pods), in its own receiver: a kubelet that
+  # refuses /pods (older than 1.33, e.g. a node pool behind its control plane) fails only this
+  # scrape (request/limit utilization, volume metrics), not the node, pod and container metrics.
+  kubelet_stats/pods:
+    {{- include "agent.kubeletClient" . | nindent 4 }}
+    metric_groups: [pod, container, volume]
+    # Volume types and PVC names on volume metrics.
+    extra_metadata_labels: [k8s.volume.type]
+    metrics:
       {{- range $kind := list "pod" "container" }}
       {{- range $m := list "cpu_limit" "cpu_request" "memory_limit" "memory_request" }}
       k8s.{{ $kind }}.{{ $m }}_utilization: {enabled: true}
       {{- end }}
       {{- end }}
+      # The rest of the pod and container groups come from kubelet_stats.
+      {{- range $m := list "cpu.time" "cpu.usage" "filesystem.available" "filesystem.capacity" "filesystem.usage" "memory.available" "memory.major_page_faults" "memory.page_faults" "memory.rss" "memory.usage" "memory.working_set" }}
+      k8s.pod.{{ $m }}: {enabled: false}
+      container.{{ $m }}: {enabled: false}
       {{- end }}
+      k8s.pod.network.errors: {enabled: false}
+      k8s.pod.network.io: {enabled: false}
+  {{- end }}
   {{- end }}
 
 processors:
@@ -168,7 +175,7 @@ service:
       exporters: [otlp_http/metrics]
     {{- if .Values.metrics.collectKubeletMetrics }}
     metrics/node:
-      receivers: [kubelet_stats]
+      receivers: [kubelet_stats{{ if include "agent.podSpecs" . }}, kubelet_stats/pods{{ end }}]
       processors: [memory_limiter{{ if include "agent.k8sMetadata" . }}, k8sattributes{{ end }}, resource/node, resource/ezgh, transform/application, transform/k8slabels]
       exporters: [otlp_http/metrics]
     {{- end }}

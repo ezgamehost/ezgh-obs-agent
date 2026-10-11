@@ -1,4 +1,5 @@
-# No host log access, Kubernetes token, or cluster RBAC. The export queue still uses hostPath.
+# No host log access, Kubernetes token, or cluster RBAC (and so no cluster state or events).
+# The export queue still uses hostPath.
 cluster:
   name: production-us-west
 ezgh:
@@ -9,3 +10,5 @@ logs:
   collectContainerLogs: false
 metrics:
   collectKubeletMetrics: false
+clusterState:
+  enabled: false

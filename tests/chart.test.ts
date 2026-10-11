@@ -154,17 +154,30 @@ describe("Helm installation contract", () => {
     expect(render(["--set", "metrics.enabled=false"]).config.processors["transform/k8slabels"]).toBeUndefined();
   });
 
-  test("kubelet_stats adds uptime, inode and (1.33+) request/limit utilization metrics", () => {
-    const kubelet = render().config.receivers.kubelet_stats;
-    expect(Object.keys(kubelet.metrics)).toEqual(["k8s.node.uptime", "k8s.pod.uptime", "k8s.node.filesystem.inode.count",
-      "k8s.node.filesystem.inode.free", ...["pod", "container"].flatMap((k) =>
-        ["cpu_limit", "cpu_request", "memory_limit", "memory_request"].map((m) => `k8s.${k}.${m}_utilization`))]);
-    expect(kubelet.extra_metadata_labels).toEqual(["k8s.volume.type"]);
+  test("kubelet_stats adds uptime and inode metrics; pod-spec metrics (1.33+) have their own receiver", () => {
+    const { config } = render();
+    const kubelet = config.receivers.kubelet_stats;
+    expect(Object.keys(kubelet.metrics)).toEqual(["k8s.node.uptime", "k8s.pod.uptime", "k8s.node.filesystem.inode.count", "k8s.node.filesystem.inode.free"]);
+    expect(kubelet.metric_groups).toEqual(["node", "pod", "container"]);
+    expect(kubelet.extra_metadata_labels).toBeUndefined();
+    // A kubelet refusing /pods (behind its control plane) fails only this receiver's scrape.
+    const pods = config.receivers["kubelet_stats/pods"];
+    expect(pods.metric_groups).toEqual(["pod", "container", "volume"]);
+    expect(pods.extra_metadata_labels).toEqual(["k8s.volume.type"]);
+    const utilization = ["pod", "container"].flatMap((k) => ["cpu_limit", "cpu_request", "memory_limit", "memory_request"].map((m) => `k8s.${k}.${m}_utilization`));
+    expect(Object.entries(pods.metrics).filter(([, v]: any) => v.enabled).map(([k]) => k)).toEqual(utilization);
+    // Every pod and container metric kubelet_stats sends by default is off here, so none is sent twice.
+    const defaults = ["cpu.time", "cpu.usage", "filesystem.available", "filesystem.capacity", "filesystem.usage", "memory.available",
+      "memory.major_page_faults", "memory.page_faults", "memory.rss", "memory.usage", "memory.working_set"];
+    const off = Object.entries(pods.metrics).filter(([, v]: any) => !v.enabled).map(([k]) => k).sort();
+    expect(off).toEqual([...defaults.map((m) => `k8s.pod.${m}`), ...defaults.map((m) => `container.${m}`), "k8s.pod.network.errors", "k8s.pod.network.io"].sort());
+    expect(config.service.pipelines["metrics/node"].receivers).toEqual(["kubelet_stats", "kubelet_stats/pods"]);
     // Before 1.33 the kubelet authorizes /pods only with nodes/proxy, which the chart never grants.
     for (const args of [["--kube-version", "1.32.2"], ["--set", "metrics.kubelet.podSpecs=false"]]) {
       const { documents, config } = render(args);
-      expect(Object.keys(config.receivers.kubelet_stats.metrics)).toHaveLength(4);
-      expect(config.receivers.kubelet_stats.extra_metadata_labels).toBeUndefined();
+      expect(config.receivers["kubelet_stats/pods"]).toBeUndefined();
+      expect(config.receivers.kubelet_stats.metric_groups).toEqual(["node", "pod", "container", "volume"]);
+      expect(config.service.pipelines["metrics/node"].receivers).toEqual(["kubelet_stats"]);
       expect(agentRole(documents).rules.map((r) => r.resources[0])).not.toContain("nodes/pods");
     }
     const forced = render(["--set", "metrics.kubelet.podSpecs=true", "--kube-version", "1.32.2"]);
@@ -172,6 +185,26 @@ describe("Helm installation contract", () => {
     for (const { documents } of [render(), forced]) {
       expect(documents.flatMap((d) => d.kind === "ClusterRole" ? d.rules.flatMap((r) => r.resources) : [])).not.toContain("nodes/proxy");
     }
+  });
+
+  test("the OTLP-only example reads nothing from the Kubernetes API or the host", () => {
+    const { documents } = render(["-f", "examples/otlp-only.yaml"]);
+    for (const kind of ["ClusterRole", "ClusterRoleBinding", "Deployment"]) expect(documents.some((d) => d.kind === kind)).toBe(false);
+    const pod = documents.find((d) => d.kind === "DaemonSet").spec.template.spec;
+    expect(pod.automountServiceAccountToken).toBe(false);
+    expect(pod.volumes.some((v) => v.name === "pod-logs")).toBe(false);
+  });
+
+  test("the cluster-state pod's logs stay excluded for the longest release names", () => {
+    const release = "a".repeat(53);
+    const { config, documents } = render([], release);
+    const deployment = documents.find((d) => d.kind === "Deployment").metadata.name;
+    // Pods are <deployment>-<hash>-<suffix>, the generated prefix cut to 58 characters.
+    const podName = `${deployment}-5d9f7c6b8d-`.slice(0, 58) + "x7k2p";
+    const pattern = config.receivers.filelog.exclude.find((e: string) => e.includes("-cluster") || e.includes(deployment.slice(0, 40)));
+    const glob = new Bun.Glob(pattern.replace("${env:POD_NAMESPACE}", "ezgh-obs"));
+    expect(glob.match(`/var/log/pods/ezgh-obs_${podName}_uid/collector/0.log`)).toBe(true);
+    expect(glob.match(`/var/log/pods/ezgh-obs_${release}-abcde_uid/collector/0.log`)).toBe(false);
   });
 
   test("each agent sends its own metrics to its own OTLP receiver every 60 s", () => {

@@ -26,9 +26,10 @@ try {
     const { config, clusterConfig } = render(args);
     // Validation constructs the kubelet client. The offline test has no projected
     // ServiceAccount token/CA; cluster smoke tests exercise real authentication.
-    if (config.receivers.kubelet_stats) {
-      config.receivers.kubelet_stats.auth_type = "none";
-      config.receivers.kubelet_stats.ca_file = process.env.TEST_CA_FILE ?? "/etc/ssl/cert.pem";
+    for (const name of ["kubelet_stats", "kubelet_stats/pods"]) {
+      if (!config.receivers[name]) continue;
+      config.receivers[name].auth_type = "none";
+      config.receivers[name].ca_file = process.env.TEST_CA_FILE ?? "/etc/ssl/cert.pem";
     }
     const variants: [string, any][] = [["agent", config]];
     if (clusterConfig) variants.push(["cluster-state", clusterConfig]);

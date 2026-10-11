@@ -125,10 +125,11 @@ transform/k8slabels:
         {{- end }}
 {{- end -}}
 
-{{- /* Whether kubelet_stats reads pod specs from the kubelet's /pods: requests/limits utilization and
-volume types. Kubelets authorize /pods with nodes/pods since 1.33 (KubeletFineGrainedAuthz, beta and
-on by default); older ones need nodes/proxy, which this chart never grants. A failed /pods read
-fails the whole kubelet scrape, so auto turns it on only where nodes/pods is enough. */ -}}
+{{- /* Whether kubelet_stats/pods reads pod specs from the kubelet's /pods: requests/limits
+utilization and volume types. Kubelets authorize /pods with nodes/pods since 1.33
+(KubeletFineGrainedAuthz, beta and on by default); older ones need nodes/proxy, which this chart
+never grants. auto: on when the API server is 1.33+. A failed /pods read fails that receiver's
+scrape only, so kubelets lagging behind the control plane lose just those metrics. */ -}}
 {{- define "agent.podSpecs" -}}
 {{- $mode := .Values.metrics.kubelet.podSpecs -}}
 {{- if and .Values.metrics.enabled .Values.metrics.collectKubeletMetrics -}}
@@ -242,4 +243,14 @@ telemetry:
               protocol: http/protobuf
               endpoint: http://127.0.0.1:4318/v1/metrics
       {{- end }}
+{{- end -}}
+
+{{- define "agent.kubeletClient" -}}
+auth_type: serviceAccount
+endpoint: {{ .Values.metrics.kubelet.endpoint | quote }}
+insecure_skip_verify: {{ .Values.metrics.kubelet.insecureSkipVerify }}
+{{- if .Values.metrics.kubelet.caConfigMap }}
+ca_file: /etc/kubelet-ca/ca.crt
+{{- end }}
+collection_interval: {{ .Values.metrics.collectionInterval | quote }}
 {{- end -}}
