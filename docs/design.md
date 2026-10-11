@@ -1,7 +1,7 @@
 # Kubernetes agent chart
 
-One public, independently versioned Helm chart installs a Linux DaemonSet using
-OpenTelemetry Collector Contrib. Each node tails its container logs and polls its
+One public, independently versioned Helm chart installs a Linux DaemonSet (and, since
+0.3.0, a one-replica cluster-state Deployment) using OpenTelemetry Collector Contrib. Each node tails its container logs and polls its
 kubelet; an internal OTLP Service accepts instrumented application telemetry.
 All signals leave via OTLP/HTTP protobuf with gzip and verified HTTPS.
 
@@ -33,8 +33,33 @@ queue capacity, and Secret references. Validate values and validate rendered
 Collector configuration using the exact pinned Collector binary. Test forwarding
 all signals through a local OTLP sink, and a disposable multi-node cluster in CI.
 
-No UI, application auto-instrumentation, arbitrary Prometheus discovery, cluster
-state singleton, new ingestion API, or production deployment is included in v1.
+Since 0.3.0 (for EZGH's built-in Kubernetes dashboards, service-template
+`docs/observability/kubernetes-dashboards.md`, D13):
+
+- **Kubernetes labels.** obs's PromQL labels only `service.name`/`service.instance.id` among
+  resource attributes, so per-node and per-pod series would merge. `transform/k8slabels`, last on
+  every metrics pipeline, copies the `k8s.*` identity attributes (cluster, namespace, node, pod,
+  container, workloads, HPA, PVC, volume, quota) onto datapoints when the resource has them and
+  the datapoint doesn't. Resource attributes, logs and traces are unchanged.
+- **Cluster state singleton.** A one-replica `Recreate` Deployment (`clusterState`) runs
+  `k8s_cluster` (with node conditions, allocatable, PVC and status-reason metrics) and
+  `k8s_objects` on `events.k8s.io` Events, which become logs (`kubernetes-events`; note as body,
+  Warning/Normal as WARN/INFO; reason, type, object and count attributes; DELETED watch events,
+  which are TTL expiry, dropped). A cluster-wide `k8sattributes` names pods' workloads so `job`
+  matches the kubelet metrics. Own ServiceAccount and read-only ClusterRole, so the DaemonSet's
+  RBAC doesn't grow; non-root, no host paths, queues in an emptyDir. Two replicas would double
+  every series; leader election is a later option.
+- **Pod specs from the kubelet.** Request/limit utilization and volume types read `/pods`, which
+  kubelets authorize with `nodes/pods` from 1.33 (KubeletFineGrainedAuthz) and otherwise only with
+  `nodes/proxy`, which allows exec into pods and is never granted. A failed `/pods` read fails the
+  whole scrape, so `podSpecs: auto` turns it on only where Helm reports 1.33+.
+- **Self-telemetry.** A second periodic reader sends each Collector's metrics every 60 s to its
+  own OTLP receiver (`service.name=ezgh-obs-agent`, instance = node or `cluster-state`), through
+  the normal metrics pipeline once. The Prometheus pull endpoint on 8888 stays. The final flush at
+  shutdown finds the receiver stopped, so the Collector exits 1 after a clean shutdown.
+
+No UI, application auto-instrumentation, arbitrary Prometheus discovery, control-plane metrics,
+new ingestion API, or production deployment is included.
 The chart's source and packaged GitHub Release are public, and the same archive is
 published as a public OCI artifact at `oci://ghcr.io/ezgamehost/charts/ezgh-obs-agent`
 (the preferred install source); credentials are never stored in Helm values.

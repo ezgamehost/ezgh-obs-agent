@@ -81,7 +81,8 @@ clusterState:
 # Pod and workload metadata from the Kubernetes API, for pods on each agent's own node only.
 # A workload without a service.name (or with an SDK's unknown_service default) is named after its
 # Deployment, StatefulSet, DaemonSet, CronJob or Job. Needs get/list/watch on pods, ReplicaSets
-# and Jobs.
+# and Jobs. The cluster-state Deployment uses it too, cluster-wide, to name its pod and container
+# metrics after their workloads.
 kubernetesMetadata:
   enabled: true
 

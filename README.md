@@ -1,17 +1,19 @@
 # EZGH Obs Agent
 
 A Helm chart that forwards Kubernetes container logs, node/pod/container metrics,
-and application OpenTelemetry data to [EZGH Cloud](https://ezghcloud.com).
+cluster state, Kubernetes events and application OpenTelemetry data to
+[EZGH Cloud](https://ezghcloud.com).
 
-One Linux DaemonSet pod per eligible node, using OpenTelemetry Collector Contrib
-**0.162.0**. No operator, CRDs, custom agent binary, or application changes are
-needed for container logs and infrastructure metrics. Application traces require
-an existing SDK or other instrumentation.
+One Linux DaemonSet pod per eligible node, plus one Deployment pod for cluster state
+and events, using OpenTelemetry Collector Contrib **0.162.0**. No operator, CRDs,
+custom agent binary, or application changes are needed for container logs and
+infrastructure metrics. Application traces require an existing SDK or other
+instrumentation. EZGH's built-in Kubernetes dashboards need 0.3.0.
 
 ## Install
 
 Requires Helm 3.17+ or Helm 4, Kubernetes 1.28+, IPv4-capable Linux nodes with standard
-`/var/log/pods` CRI logs, and permission to create a DaemonSet and cluster RBAC.
+`/var/log/pods` CRI logs, and permission to create a DaemonSet, a Deployment and cluster RBAC.
 Windows, serverless nodes without hostPath access, and restricted Pod Security
 namespaces are not supported by the default installation.
 
@@ -26,7 +28,7 @@ kubectl -n ezgh-obs create secret generic ezgh-obs-ingest \
   --from-file=ingest-key=./ingest-key.txt
 
 helm upgrade --install ezgh-obs-agent \
-  oci://ghcr.io/ezgamehost/charts/ezgh-obs-agent --version 0.2.0 \
+  oci://ghcr.io/ezgamehost/charts/ezgh-obs-agent --version 0.3.0 \
   --namespace ezgh-obs \
   --set cluster.name=production-us-west \
   --set ezgh.environment=production \
@@ -39,11 +41,11 @@ Secret through your existing secret manager. The chart never creates a Secret
 or stores a credential in Helm values or release history.
 
 The chart is published as an OCI artifact on GHCR, which is the preferred source
-(`helm pull oci://ghcr.io/ezgamehost/charts/ezgh-obs-agent --version 0.2.0`; Helm
+(`helm pull oci://ghcr.io/ezgamehost/charts/ezgh-obs-agent --version 0.3.0`; Helm
 3.8+ needs no `helm repo add`). The same package is attached to each GitHub
 Release, for networks that can't reach ghcr.io: replace the `oci://…` reference
 and `--version` with
-`https://github.com/ezgamehost/ezgh-obs-agent/releases/download/v0.2.0/ezgh-obs-agent-0.2.0.tgz`
+`https://github.com/ezgamehost/ezgh-obs-agent/releases/download/v0.3.0/ezgh-obs-agent-0.3.0.tgz`
 (checksums in that release's `SHA256SUMS`). To install from source, use
 `./charts/ezgh-obs-agent`.
 See [production values](examples/production.yaml) and [OTLP-only values](examples/otlp-only.yaml).
@@ -53,7 +55,10 @@ See [production values](examples/production.yaml) and [OTLP-only values](example
 | Source | Default behavior |
 | --- | --- |
 | Container logs | Read `/var/log/pods/*/*/*.log`; parse containerd, CRI-O and Docker JSON formats; recover CRI partial lines. Exclude this agent's own pod. |
-| Kubelet | Poll `/stats/summary` every 30 seconds for node, pod, container and volume metrics. |
+| Kubelet | Poll `/stats/summary` every 30 seconds for node, pod, container and volume metrics, including node and pod uptime and node inodes. On Kubernetes 1.33+ also read `/pods` for CPU and memory request/limit utilization and volume types (see [Privileges](#privileges-and-delivery)). |
+| Cluster state | One Deployment replica watches the API: pod phase and status reason, container restarts, readiness, requests, limits and status reason, Deployment/StatefulSet/DaemonSet/ReplicaSet/Job/CronJob/HPA replicas, namespace phase, resource quotas, node conditions and allocatable CPU, memory and pods, PVC phase and size. Every 30 seconds, once for the cluster. |
+| Kubernetes events | The same Deployment watches `events.k8s.io` Events and sends them as logs. |
+| Agent self-telemetry | Each agent's own Collector metrics (exports, failures, queue fill, refusals, memory, CPU) every 60 seconds. |
 | Application OTLP | Accept enabled signals on the internal Service: gRPC 4317, HTTP 4318. |
 | Export | OTLP/HTTP protobuf, gzip, verified HTTPS to `https://obs-ingest.ezghcloud.com`. |
 
@@ -104,9 +109,112 @@ prefix, or a leading level word after an optional timestamp and `[thread]`
 `ERROR` or `FATAL` with the matching severity number. Lines without one stay
 unset; stderr isn't assumed to be an error. Application OTLP logs keep their own.
 
-Arbitrary pod-label enrichment, Kubernetes events, cluster-state metrics,
-Prometheus target discovery and automatic application instrumentation are not
-included.
+### Kubernetes labels in PromQL
+
+EZGH's PromQL makes labels of every datapoint attribute, but of only two resource
+attributes: `service.name` (`job`) and `service.instance.id` (`instance`). Kubernetes
+identity is resource attributes, so on its own every node's or pod's series would
+merge into one. Every agent metrics pipeline (kubelet, cluster state, self-telemetry
+and application OTLP) therefore copies these resource attributes onto each datapoint,
+when the resource has them and the datapoint doesn't:
+
+`k8s.cluster.name`, `k8s.namespace.name`, `k8s.node.name`, `k8s.pod.name`,
+`k8s.container.name`, `k8s.deployment.name`, `k8s.statefulset.name`,
+`k8s.daemonset.name`, `k8s.replicaset.name`, `k8s.job.name`, `k8s.cronjob.name`,
+`k8s.hpa.name`, `k8s.persistentvolumeclaim.name`, `k8s.volume.name`,
+`k8s.volume.type`, `k8s.resourcequota.name`, `k8s.replicationcontroller.name`.
+
+In PromQL they're `k8s_cluster_name`, `k8s_namespace_name`, `k8s_pod_name` and so on:
+`sum by (k8s_node_name) (k8s_node_cpu_usage)`. Logs and traces are unchanged (they
+keep `resource.k8s.*`). Application metrics get them only when their resource has
+them: as sent, or added by the agent with `otlp.internalTrafficPolicy: Local`; their
+series then split by pod, and `sum by` totals stay the same. Data from agents before
+0.3.0 has no such labels.
+
+If you run your own OpenTelemetry Collector with `k8sattributes` instead of this
+agent, add the same processor to its metrics pipelines, after `k8sattributes`:
+
+```yaml
+processors:
+  transform/k8slabels:
+    error_mode: ignore
+    metric_statements:
+      - context: datapoint
+        statements:
+          - set(attributes["k8s.cluster.name"], resource.attributes["k8s.cluster.name"]) where resource.attributes["k8s.cluster.name"] != nil and attributes["k8s.cluster.name"] == nil
+          - set(attributes["k8s.namespace.name"], resource.attributes["k8s.namespace.name"]) where resource.attributes["k8s.namespace.name"] != nil and attributes["k8s.namespace.name"] == nil
+          - set(attributes["k8s.node.name"], resource.attributes["k8s.node.name"]) where resource.attributes["k8s.node.name"] != nil and attributes["k8s.node.name"] == nil
+          - set(attributes["k8s.pod.name"], resource.attributes["k8s.pod.name"]) where resource.attributes["k8s.pod.name"] != nil and attributes["k8s.pod.name"] == nil
+          - set(attributes["k8s.container.name"], resource.attributes["k8s.container.name"]) where resource.attributes["k8s.container.name"] != nil and attributes["k8s.container.name"] == nil
+          - set(attributes["k8s.deployment.name"], resource.attributes["k8s.deployment.name"]) where resource.attributes["k8s.deployment.name"] != nil and attributes["k8s.deployment.name"] == nil
+          - set(attributes["k8s.statefulset.name"], resource.attributes["k8s.statefulset.name"]) where resource.attributes["k8s.statefulset.name"] != nil and attributes["k8s.statefulset.name"] == nil
+          - set(attributes["k8s.daemonset.name"], resource.attributes["k8s.daemonset.name"]) where resource.attributes["k8s.daemonset.name"] != nil and attributes["k8s.daemonset.name"] == nil
+          - set(attributes["k8s.replicaset.name"], resource.attributes["k8s.replicaset.name"]) where resource.attributes["k8s.replicaset.name"] != nil and attributes["k8s.replicaset.name"] == nil
+          - set(attributes["k8s.job.name"], resource.attributes["k8s.job.name"]) where resource.attributes["k8s.job.name"] != nil and attributes["k8s.job.name"] == nil
+          - set(attributes["k8s.cronjob.name"], resource.attributes["k8s.cronjob.name"]) where resource.attributes["k8s.cronjob.name"] != nil and attributes["k8s.cronjob.name"] == nil
+          - set(attributes["k8s.hpa.name"], resource.attributes["k8s.hpa.name"]) where resource.attributes["k8s.hpa.name"] != nil and attributes["k8s.hpa.name"] == nil
+          - set(attributes["k8s.persistentvolumeclaim.name"], resource.attributes["k8s.persistentvolumeclaim.name"]) where resource.attributes["k8s.persistentvolumeclaim.name"] != nil and attributes["k8s.persistentvolumeclaim.name"] == nil
+          - set(attributes["k8s.volume.name"], resource.attributes["k8s.volume.name"]) where resource.attributes["k8s.volume.name"] != nil and attributes["k8s.volume.name"] == nil
+          - set(attributes["k8s.volume.type"], resource.attributes["k8s.volume.type"]) where resource.attributes["k8s.volume.type"] != nil and attributes["k8s.volume.type"] == nil
+          - set(attributes["k8s.resourcequota.name"], resource.attributes["k8s.resourcequota.name"]) where resource.attributes["k8s.resourcequota.name"] != nil and attributes["k8s.resourcequota.name"] == nil
+          - set(attributes["k8s.replicationcontroller.name"], resource.attributes["k8s.replicationcontroller.name"]) where resource.attributes["k8s.replicationcontroller.name"] != nil and attributes["k8s.replicationcontroller.name"] == nil
+```
+
+### Cluster state and events
+
+Some of what a cluster's dashboards need isn't on any one node: pod phase, restarts,
+requests and limits, replica counts, node conditions, events. A single-replica
+Deployment, `<release>-cluster`, collects it (`clusterState.enabled`, default `true`)
+with the same image, Secret, environment and cluster name, and its own ConfigMap and
+ServiceAccount:
+
+- **Cluster metrics** (`k8s_cluster`, every `clusterState.collectionInterval`, 30 s)
+  when metrics are enabled. It also adds each pod's workload, so pod and container
+  metrics get the same `service.name` as the kubelet's.
+- **Kubernetes events** (`k8s_objects`, watching `events.k8s.io/v1` Events) when logs
+  are enabled, as logs named `kubernetes-events` (`ezgh.metadata.application:
+  kubernetes`), in the event's namespace (`k8s.namespace.name`). The body is the
+  event's note, the level is `WARN` for Warning events and `INFO` for Normal ones, and
+  the attributes are `k8s.event.reason`, `k8s.event.type`, `k8s.object.kind`,
+  `k8s.object.name` and `k8s.event.count`. A repeating event is sent again with a
+  higher count; expiring events aren't sent; events during a restart of the Deployment
+  are missed.
+- **One replica, `Recreate`**: two would send every cluster series twice. A rollout
+  leaves a gap of about one collection interval.
+
+It runs as a non-root user, reads no host files and keeps its export queues in an
+`emptyDir` (they survive a Collector restart, not a new pod). Its scheduling and
+budget are its own: `clusterState.nodeSelector`, `tolerations`, `affinity`,
+`priorityClassName`, `resources` and `memoryLimiter`. `clusterState.enabled: false`
+removes the Deployment, its ConfigMap, ServiceAccount and RBAC.
+
+### Agent self-telemetry
+
+When metrics are enabled, each agent also sends its own Collector metrics to its own
+OTLP receiver every 60 seconds, through its normal metrics pipeline, with
+`service.name` `ezgh-obs-agent` and `service.instance.id` set to its node's name (the
+cluster-state agent's is `cluster-state`): items accepted and refused by receivers,
+sent and failed by exporters, queue size and capacity, and process memory and CPU.
+They're about 65 series per node agent. The same metrics stay on each pod's port 8888.
+It passes through the pipeline once; processing it only moves counters that are sent
+anyway, so it can't grow on itself. One side effect: at shutdown the Collector's
+final self-telemetry flush finds its receiver already stopped, so it exits with
+status 1 after a clean shutdown.
+
+### Volume
+
+For a 10-node cluster with 300 pods, 0.3.0 sends about 18,000 metric series every
+30 seconds, against about 12,000 for 0.2.0: request/limit utilization, uptime and
+inodes add about 6 per pod and container; cluster state about 9 per container, 2 per
+pod, 2 to 5 per workload and 8 per node, once for the cluster, plus 9 per container for
+`k8s.container.status.reason`; self-telemetry about 65 per agent at 60 seconds. The
+copied labels add no series; each copied value is stored a second time, a few percent
+of compressed bytes. Events are one log record per event or repeat, usually far fewer
+than container logs. Turn cluster state off, or raise
+`clusterState.collectionInterval`, to send less.
+
+Arbitrary pod-label enrichment, Prometheus target discovery, control-plane metrics
+and automatic application instrumentation are not included.
 
 ## Send application telemetry
 
@@ -147,6 +255,11 @@ All settings are in [values.yaml](charts/ezgh-obs-agent/values.yaml), with a str
 | `logs.startAt` | `beginning` by default, capturing existing files on first install and short-lived pods. Use `end` to avoid an initial backlog. Saved offsets take precedence. |
 | `logs.maxLogSize` | Default `256KiB`, including recombined CRI records. Keep records small enough for the backend request limit. |
 | `metrics.collectionInterval` | Default `30s`. |
+| `metrics.kubelet.podSpecs` | `auto` (default), `true` or `false`: read pod specs from the kubelet's `/pods` for request/limit utilization and volume types. `auto` is on for Kubernetes 1.33+. See [Privileges](#privileges-and-delivery). |
+| `clusterState.enabled` | Default `true`: the cluster-state Deployment (cluster metrics and events). `false` removes it and its RBAC. |
+| `clusterState.collectionInterval` | Default `30s`. |
+| `clusterState.resources`, `clusterState.memoryLimiter` | Its own budget; raise both for large clusters. |
+| `clusterState.nodeSelector`, `clusterState.tolerations`, `clusterState.affinity`, `clusterState.priorityClassName` | Where it runs. Linux selection is mandatory. |
 | `metrics.kubelet.endpoint` | Default node IPv4 address on HTTPS 10250; supports Collector `${env:…}` substitutions. |
 | `metrics.kubelet.caConfigMap`, `metrics.kubelet.caKey` | Custom kubelet CA; otherwise use the ServiceAccount CA. |
 | `metrics.kubelet.insecureSkipVerify` | Default `false`. An explicit opt-out for clusters with untrusted kubelet serving certificates; retains encryption but skips server identity verification. |
@@ -171,9 +284,24 @@ The collector runs as UID 0 to read root-owned container logs and write the
 node-local queue directory. It drops every Linux capability, disables privilege
 escalation, uses a read-only root filesystem and RuntimeDefault seccomp, and does
 not use privileged mode, host networking, host PID, or a runtime socket.
-The log hostPath is read-only. Kubelet access grants only `get` on `nodes/stats`;
-pod metadata needs only `get`, `list` and `watch` on pods, ReplicaSets and Jobs.
-The chart cannot read Kubernetes Secrets through the API.
+The log hostPath is read-only. Kubelet access grants only `get` on `nodes/stats`
+and, on Kubernetes 1.33+, `nodes/pods`; pod metadata needs only `get`, `list` and
+`watch` on pods, ReplicaSets and Jobs.
+
+Request/limit utilization and volume types read pod specs from the kubelet's `/pods`.
+From Kubernetes 1.33 kubelets authorize that with `nodes/pods` (KubeletFineGrainedAuthz,
+beta and on by default); older ones only with `nodes/proxy`, which also allows running
+commands in pods, so the chart never grants it. `metrics.kubelet.podSpecs: auto` turns
+this on from 1.33, judged by the version Helm reports. A failed `/pods` read fails the
+whole kubelet scrape, so set `false` on a 1.33+ cluster whose kubelets have the gate off,
+and `true` on an older one only if its kubelets have the gate on.
+
+The cluster-state Deployment's own ServiceAccount has cluster-wide `get`, `list` and
+`watch` on namespaces, nodes, pods, services, resource quotas, replication controllers,
+PersistentVolumeClaims, Deployments, StatefulSets, DaemonSets, ReplicaSets, Jobs,
+CronJobs and HorizontalPodAutoscalers (when metrics are enabled), and on
+`events.k8s.io` Events (when logs are). The DaemonSet's RBAC doesn't grow. Neither can
+read Secrets or ConfigMaps through the API.
 
 File offsets and three independent export queues use persistent node storage with
 fsync. Telemetry is enqueued before exporter batching. Batches are bounded to
@@ -192,13 +320,15 @@ Queues contain customer telemetry; protect node disks accordingly.
 
 ```sh
 kubectl -n ezgh-obs get daemonset ezgh-obs-agent
+kubectl -n ezgh-obs get deployment ezgh-obs-agent-cluster
 kubectl -n ezgh-obs logs -l app.kubernetes.io/instance=ezgh-obs-agent --tail=50
 ```
 
 Ready pods mean the collector process is healthy, not that EZGH has accepted data.
 Check the destination dataset for recent logs and metrics; traces arrive only
 when applications emit them. Agent Prometheus self-metrics are available on each
-pod's port 8888 for your existing scraper, without a public Service.
+pod's port 8888 for your existing scraper, without a public Service, and in EZGH
+as `job="ezgh-obs-agent"` (see [Agent self-telemetry](#agent-self-telemetry)).
 Inspect exporter queue size, enqueue/send failures and receiver refusals.
 
 | Symptom | Check |
@@ -209,13 +339,16 @@ Inspect exporter queue size, enqueue/send failures and receiver refusals.
 | Export `401`/`403` | Key validity and all enabled signal permissions. These failures are not a durable holding mechanism; fix and restart after key rotation. |
 | Export `429`/`503` | Backend throttling/outage; inspect queue and disk capacity. |
 | Missing node data | DaemonSet coverage, taints, node selectors, log exclusions and network access to kubelet 10250. |
+| Kubelet `/pods` `403`, no kubelet metrics | The kubelets don't accept `nodes/pods` (before 1.33, or KubeletFineGrainedAuthz off): set `metrics.kubelet.podSpecs: false`. |
+| No cluster state or events | The `-cluster` Deployment is running and its ClusterRole binding exists; `clusterState.enabled`. |
 
 After replacing the Secret token, restart the DaemonSet because the token is read
 from the environment at process startup:
 
 ```sh
-kubectl -n ezgh-obs rollout restart daemonset/ezgh-obs-agent
+kubectl -n ezgh-obs rollout restart daemonset/ezgh-obs-agent deployment/ezgh-obs-agent-cluster
 kubectl -n ezgh-obs rollout status daemonset/ezgh-obs-agent
+kubectl -n ezgh-obs rollout status deployment/ezgh-obs-agent-cluster
 ```
 
 Use the same `helm upgrade --install` command with an explicit new chart version
@@ -238,7 +371,7 @@ bun run lint
 bun run test
 bun run validate
 bun run test:integration
-bun run package                    # dist/ezgh-obs-agent-0.2.0.tgz
+bun run package                    # dist/ezgh-obs-agent-0.3.0.tgz
 ```
 
 Set `COLLECTOR_BIN` to use an existing binary. Offline validation substitutes
@@ -247,11 +380,13 @@ a pod; CI's real multi-node test covers the rendered ServiceAccount configuratio
 Set `TEST_CA_FILE` if your system CA bundle is not `/etc/ssl/cert.pem`.
 
 The integration test runs real Collector processes, a fixture kubelet HTTPS server,
-and a local sink: all three signals, kubelet polling, gzip/auth headers, CRI parsing, source metadata, and forced-restart queue
-recovery. It sends no telemetry to EZGH. CI additionally installs the chart in a
-disposable two-worker kind cluster and verifies node metrics, pod logs, traces,
-TLS export, and a rolling restart. `scripts/smoke.sh` refuses any context other
-than `kind-ezgh-obs-agent`.
+and a local sink: all three signals, kubelet polling, gzip/auth headers, CRI parsing, source metadata, Kubernetes
+labels on datapoints, self-telemetry, forced-restart queue recovery, and the cluster-state
+Collector's event transformation (with OTLP standing in for the Kubernetes API). It sends no
+telemetry to EZGH. CI additionally installs the chart in a disposable two-worker kind cluster
+(Kubernetes 1.34) and verifies node metrics, pod logs, traces, one series per pod, cluster
+state, events, self-telemetry, TLS export, and rolling restarts (`scripts/smoke-check.ts`
+reads the sink's output). `scripts/smoke.sh` refuses any context other than `kind-ezgh-obs-agent`.
 
 To release, increment `Chart.yaml`'s `version`, update the install examples, and
 push the matching `v<version>` tag. The release workflow reruns CI, publishes
