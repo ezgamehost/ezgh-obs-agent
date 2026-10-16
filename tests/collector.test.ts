@@ -392,10 +392,17 @@ test("cluster-state Collector: events become logs, metrics get Kubernetes labels
       { key: "k8s.namespace.name", value: str("shop") }, { key: "k8s.node.name", value: str("node-a") },
       { key: "k8s.deployment.name", value: str("web") },
     ] }, scopeMetrics: [{ metrics: [{ name: "k8s.pod.phase", gauge: { dataPoints: [{ timeUnixNano: String(BigInt(Date.now()) * 1000000n), asInt: "2" }] } }] }] }] });
+    // What k8s_cluster emits for a Job: no pod, so no k8s_attributes owner lookup. A CronJob's
+    // run, a Job named with a date, and a plain Job.
+    const jobs = { "nightly-29866980": "nightly", "report-20261016": "report-20261016", "migrate": "migrate" };
+    await send(clusterPort, "metrics", { resourceMetrics: Object.keys(jobs).map((job) => ({ resource: { attributes: [
+      { key: "k8s.job.name", value: str(job) }, { key: "k8s.job.uid", value: str(`uid-${job}`) },
+      { key: "k8s.namespace.name", value: str("shop") },
+    ] }, scopeMetrics: [{ metrics: [{ name: "k8s.job.active_pods", gauge: { dataPoints: [{ timeUnixNano: String(BigInt(Date.now()) * 1000000n), asInt: "1" }] } }] }] })) });
     const records = async () => (await Bun.file(output).text()).trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
     await eventually(async () => {
       const text = JSON.stringify(await records());
-      for (const marker of ["Back-off restarting", "Scaled up replica set", "k8s.pod.phase", "otelcol_process_uptime"]) expect(text).toContain(marker);
+      for (const marker of ["Back-off restarting", "Scaled up replica set", "k8s.pod.phase", "k8s.job.active_pods", "otelcol_process_uptime"]) expect(text).toContain(marker);
     });
     const logs = (await records()).flatMap((r) => r.resourceLogs ?? []).flatMap((rl) =>
       rl.scopeLogs.flatMap((sl) => sl.logRecords.map((l) => ({ resource: attributeMap(rl.resource.attributes), ...l }))));
@@ -416,6 +423,11 @@ test("cluster-state Collector: events become logs, metrics get Kubernetes labels
     expect(phase.resource["service.name"]).toBe("web");
     expect(phase.attributes).toEqual({ "k8s.cluster.name": "test-cluster", "k8s.namespace.name": "shop",
       "k8s.node.name": "node-a", "k8s.pod.name": "web-1", "k8s.deployment.name": "web" });
+    for (const [job, service] of Object.entries(jobs)) {
+      const active = points.find((p) => p.name === "k8s.job.active_pods" && p.attributes["k8s.job.name"] === job)!;
+      expect(active.resource["service.name"]).toBe(service);
+      expect(active.attributes["k8s.cronjob.name"]).toBe(service === job ? undefined : service);
+    }
     const self = points.find((p) => p.name === "otelcol_process_uptime")!;
     expect(self.resource).toMatchObject({ "service.name": "ezgh-obs-agent", "service.instance.id": "cluster-state" });
     expect(self.attributes).toMatchObject({ "k8s.cluster.name": "test-cluster", "k8s.namespace.name": "ezgh-obs", "k8s.pod.name": "agent-cluster-abc" });

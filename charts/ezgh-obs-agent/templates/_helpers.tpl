@@ -78,6 +78,19 @@ true
     {{- end }}
 {{- end -}}
 
+{{- /* k8s.cronjob.name for k8s_cluster's Job metrics, which carry the Job but no pod for
+k8s_attributes to resolve: otherwise each run's Job (<cronjob>-<unix minute>) names a new service.
+The CronJob controller's 8-digit minute suffix, as k8s_attributes reads a pod's Job name;
+2000xxxx suffixes are left alone, as YYYYMMDD dates rather than minutes. */ -}}
+{{- define "agent.cronJobStatements" -}}
+- context: resource
+  conditions:
+    - IsString(attributes["k8s.job.name"]) and (attributes["k8s.cronjob.name"] == nil or attributes["k8s.cronjob.name"] == "")
+  statements:
+    - 'merge_maps(cache, ExtractPatterns(attributes["k8s.job.name"], "^(?P<cronjob>.+)-(?:2[1-9]|[3-9][0-9])[0-9]{6}$"), "insert")'
+    - 'set(attributes["k8s.cronjob.name"], cache["cronjob"]) where cache["cronjob"] != nil'
+{{- end -}}
+
 {{- /* A container log's level, when the runtime gave none: from a JSON body's level field (or
 pino/bunyan's numbers), logfmt's level=, klog's I/W/E/F prefix, or a leading level word after an
 optional timestamp and [thread]. Nothing matched leaves it unset; stderr isn't taken as an error. */ -}}

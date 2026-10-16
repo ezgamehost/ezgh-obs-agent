@@ -58,6 +58,17 @@ describe("Helm installation contract", () => {
     }
   });
 
+  test("cluster Job metrics get their CronJob before the service is named, so runs share one service", () => {
+    const { config, clusterConfig } = render();
+    const groups = clusterConfig.processors["transform/application"].metric_statements;
+    expect(groups[0].conditions[0]).toContain(`attributes["k8s.job.name"]`);
+    expect(groups[0].statements.at(-1)).toStartWith(`set(attributes["k8s.cronjob.name"]`);
+    expect(groups[1].statements[0]).toStartWith(`set(attributes["service.name"], attributes["k8s.deployment.name"])`);
+    // Logs have no Job metrics; node agents get the CronJob from k8s_attributes.
+    expect(JSON.stringify(clusterConfig.processors["transform/application"].log_statements)).not.toContain("ExtractPatterns");
+    expect(JSON.stringify(config.processors["transform/application"])).not.toContain("ExtractPatterns");
+  });
+
   test("container logs get a level when the runtime gave none; OTLP logs keep theirs", () => {
     const { config } = render();
     expect(config.service.pipelines["logs/node"].processors).toContain("transform/severity");

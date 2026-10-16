@@ -28,7 +28,7 @@ kubectl -n ezgh-obs create secret generic ezgh-obs-ingest \
   --from-file=ingest-key=./ingest-key.txt
 
 helm upgrade --install ezgh-obs-agent \
-  oci://ghcr.io/ezgamehost/charts/ezgh-obs-agent --version 0.3.1 \
+  oci://ghcr.io/ezgamehost/charts/ezgh-obs-agent --version 0.3.2 \
   --namespace ezgh-obs \
   --set cluster.name=production-us-west \
   --set ezgh.environment=production \
@@ -41,11 +41,11 @@ Secret through your existing secret manager. The chart never creates a Secret
 or stores a credential in Helm values or release history.
 
 The chart is published as an OCI artifact on GHCR, which is the preferred source
-(`helm pull oci://ghcr.io/ezgamehost/charts/ezgh-obs-agent --version 0.3.1`; Helm
+(`helm pull oci://ghcr.io/ezgamehost/charts/ezgh-obs-agent --version 0.3.2`; Helm
 3.8+ needs no `helm repo add`). The same package is attached to each GitHub
 Release, for networks that can't reach ghcr.io: replace the `oci://…` reference
 and `--version` with
-`https://github.com/ezgamehost/ezgh-obs-agent/releases/download/v0.3.1/ezgh-obs-agent-0.3.1.tgz`
+`https://github.com/ezgamehost/ezgh-obs-agent/releases/download/v0.3.2/ezgh-obs-agent-0.3.2.tgz`
 (checksums in that release's `SHA256SUMS`). To install from source, use
 `./charts/ezgh-obs-agent`.
 See [production values](examples/production.yaml) and [OTLP-only values](examples/otlp-only.yaml).
@@ -171,7 +171,10 @@ ServiceAccount:
 
 - **Cluster metrics** (`k8s_cluster`, every `clusterState.collectionInterval`, 30 s)
   when metrics are enabled. It also adds each pod's workload, so pod and container
-  metrics get the same `service.name` as the kubelet's.
+  metrics get the same `service.name` as the kubelet's. Job metrics have no pod: a
+  Job named `<cronjob>-<8-digit minute>`, as the CronJob controller names each run,
+  gets `k8s.cronjob.name` from its name, so every run's metrics belong to the
+  CronJob's service rather than a new service per run.
 - **Kubernetes events** (`k8s_objects`, watching `events.k8s.io/v1` Events) when logs
   are enabled, as logs named `kubernetes-events` (`ezgh.metadata.application:
   kubernetes`), in the event's namespace (`k8s.namespace.name`). The body is the
@@ -377,7 +380,7 @@ bun run lint
 bun run test
 bun run validate
 bun run test:integration
-bun run package                    # dist/ezgh-obs-agent-0.3.1.tgz
+bun run package                    # dist/ezgh-obs-agent-0.3.2.tgz
 ```
 
 Set `COLLECTOR_BIN` to use an existing binary. Offline validation substitutes

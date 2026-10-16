@@ -58,6 +58,7 @@ processors:
     {{- end }}
     {{- if .Values.metrics.enabled }}
     metric_statements:
+      {{- include "agent.cronJobStatements" . | nindent 6 }}
       {{- include "agent.serviceStatements" . | nindent 6 }}
       {{- include "agent.applicationStatements" . | nindent 6 }}
     {{- end }}
